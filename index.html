@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MEKIPRO — Pronostics. Paris. Performance.</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- AJOUT (import cotes par capture d'écran) — OCR 100% côté client, aucune donnée
+     image envoyée à un serveur tiers autre que le CDN qui sert la lib elle-même. -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -481,11 +484,15 @@
     </div>
     <div class="section-title">Backtest indicatif — marché simulé (échantillon démo)</div>
     <div id="backtestSummary"></div>
+    <div class="section-title">Calibration du modèle (Brier score / reliability diagram)</div>
+    <div id="backtestCalibration"></div>
     <div class="section-title">Détail des paris simulés</div>
     <div id="backtestDetail"></div>
 
     <div class="section-title">Backtest vérifiable — cotes réelles archivées</div>
     <div id="backtestReelSummary"></div>
+    <div class="section-title">Calibration du modèle (cotes réelles)</div>
+    <div id="backtestReelCalibration"></div>
     <div class="section-title">Détail des paris (cotes réelles)</div>
     <div id="backtestReelDetail"></div>
   </div>
@@ -547,12 +554,62 @@
     <div class="section-title">Import manuel (complément / secours)</div>
     <div class="card">
       <div class="meta" style="margin-bottom:10px;">
-        Utile si un championnat local n'est pas couvert par l'API. Format :
-        <code>Équipe Domicile, Équipe Extérieur, buts dom, buts ext</code>
+        Utile si un championnat local n'est pas couvert par l'API, ou pour importer un historique de saison. Un résultat par ligne, traités dans l'ordre chronologique réel (pas l'ordre collé) :
+        <br>• Rapide (date = aujourd'hui) : <code>Équipe Dom, Équipe Ext, buts dom, buts ext</code>
+        <br>• Avec date : <code>Équipe Dom, Équipe Ext, JJ/MM/AAAA, buts dom, buts ext</code>
+        <br>• Avec date + championnat : <code>Équipe Dom, Équipe Ext, JJ/MM/AAAA, buts dom, buts ext, championnat</code>
+        <br>• Avec xG réel (Understat/FBref, sans date) : <code>Équipe Dom, Équipe Ext, buts dom, buts ext, xG dom, xG ext</code>
       </div>
-      <textarea id="importInput" rows="4" style="width:100%; background:#0a0a0a; color:#f2f2ee; border:1px solid #33391f; border-radius:8px; padding:10px; font-family:monospace; font-size:13px;" placeholder="ASEC Mimosas, Bouaké FC, 2, 1"></textarea>
+      <textarea id="importInput" rows="4" style="width:100%; background:#0a0a0a; color:#f2f2ee; border:1px solid #33391f; border-radius:8px; padding:10px; font-family:monospace; font-size:13px;" placeholder="West Ham, Bournemouth, 21/02/2026, 0, 0, Premier League"></textarea>
       <button class="btn-primary" style="margin-top:10px;" data-action="importer-resultats">Importer et recalculer les ratings</button>
       <div id="importFeedback" class="meta" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="section-title">Import manuel des cotes (bookmaker)</div>
+    <div class="card">
+      <div class="meta" style="margin-bottom:10px;">
+        Pour parier sur des cotes réelles sans attendre la synchro automatique (utile vu le quota API limité) — colle les cotes 1X2 lues sur un bookmaker (capture d'écran). Une ligne par match. Format si le match est déjà connu de l'app :
+        <code>Équipe Domicile, Équipe Extérieur, cote 1, cote N, cote 2</code>
+        — ou, pour un match pas encore connu (crée le match automatiquement) :
+        <code>Équipe Domicile, Équipe Extérieur, JJ/MM/AAAA HH:MM, cote 1, cote N, cote 2</code>
+      </div>
+      <div class="meta" style="margin-bottom:6px;">Bookmaker (pour comparer les cotes entre eux et suivre leur taux de réussite) :</div>
+      <select id="importCotesBookmaker" style="width:100%; background:#0a0a0a; color:#f2f2ee; border:1px solid #33391f; border-radius:8px; padding:10px; margin-bottom:10px;">
+        <option value="manuel">Non précisé</option>
+        <option value="Betclic">Betclic</option>
+        <option value="Winamax">Winamax</option>
+        <option value="Unibet">Unibet</option>
+        <option value="Bwin">Bwin</option>
+        <option value="PMU">PMU</option>
+        <option value="ParionsSport">ParionsSport</option>
+        <option value="Betway">Betway</option>
+        <option value="1xBet">1xBet</option>
+        <option value="__autre__">Autre…</option>
+      </select>
+      <input id="importCotesBookmakerAutre" type="text" placeholder="Nom du bookmaker" style="display:none; width:100%; background:#0a0a0a; color:#f2f2ee; border:1px solid #33391f; border-radius:8px; padding:10px; margin-bottom:10px;" />
+
+      <!-- AJOUT — analyse OCR d'une capture d'écran de bookmaker : pré-remplit la
+           zone de texte ci-dessous, mais n'importe JAMAIS automatiquement (l'OCR
+           peut se tromper sur un chiffre ou un nom d'équipe) — relire avant de
+           cliquer sur "Importer ces cotes". -->
+      <div class="meta" style="margin-bottom:6px;">Ou analyser directement une capture d'écran (1 à plusieurs matchs, format "Équipe / X / Équipe" + 3 cotes, comme sur BetMomo, Betclic, Winamax…) :</div>
+      <input id="captureCotesFichier" type="file" accept="image/*" style="width:100%; background:#0a0a0a; color:#f2f2ee; border:1px solid #33391f; border-radius:8px; padding:10px; margin-bottom:10px;" />
+      <button class="btn-primary" style="margin-bottom:10px;" data-action="analyser-capture-cotes">🔍 Analyser la capture (OCR)</button>
+      <div id="captureCotesFeedback" class="meta" style="margin-bottom:10px;"></div>
+
+      <textarea id="importCotesInput" rows="4" style="width:100%; background:#0a0a0a; color:#f2f2ee; border:1px solid #33391f; border-radius:8px; padding:10px; font-family:monospace; font-size:13px;" placeholder="Brazil, Norway, 05/07/2026 20:00, 1.83, 3.82, 4.90"></textarea>
+      <button class="btn-primary" style="margin-top:10px;" data-action="importer-cotes">Importer ces cotes</button>
+      <div id="importCotesFeedback" class="meta" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="section-title">Import manuel des équipes (championnat)</div>
+    <div class="card">
+      <div class="meta" style="margin-bottom:10px;">
+        Pour pré-remplir un championnat avant le premier match (évite "Équipe inconnue" dans les imports résultats/cotes) — un nom d'équipe par ligne, lu sur la liste des équipes du championnat (ex. page classement d'un bookmaker ou site du championnat). Les équipes déjà connues sont ignorées automatiquement.
+      </div>
+      <textarea id="importEquipesInput" rows="4" style="width:100%; background:#0a0a0a; color:#f2f2ee; border:1px solid #33391f; border-radius:8px; padding:10px; font-family:monospace; font-size:13px;" placeholder="Sporting Kansas City&#10;Real Salt Lake&#10;LA Galaxy"></textarea>
+      <button class="btn-primary" style="margin-top:10px;" data-action="importer-equipes">Ajouter ces équipes</button>
+      <div id="importEquipesFeedback" class="meta" style="margin-top:10px;"></div>
     </div>
   </div>
 
@@ -630,21 +687,58 @@ function calculerProbabilitesElo(eqDom, eqExt, avantageTerrain = AVANTAGE_DOMICI
 }
 
 // ------------------------------------------------------------
-// BUTS ATTENDUS (xG) — force offensive/défensive de chaque équipe appliquée
-// à la moyenne de buts du championnat, avec un facteur domicile/extérieur
-// séparé (1.12 / 0.92). Avec des équipes neutres (attaque=defense=1.0, cas
-// des équipes simulées en tout début de backtest), on retrouve bien
-// domicile=1.512 et extérieur=1.242, quelles que soient les équipes en
-// présence. Vérifié identique à sync-matchs/index.ts.
+// BUTS ATTENDUS (xG) — AJOUT (PUISSANCE-02) : force offensive/défensive
+// désormais SPLITTÉE domicile/extérieur (attaqueDom/defenseDom/attaqueExt/
+// defenseExt au lieu d'une seule paire attaque/defense partagée). Certaines
+// équipes sont structurellement différentes à domicile (ex. forteresse à
+// domicile mais friable en déplacement) — l'ancien modèle moyennait les
+// deux contextes dans une seule force, aplatissant ce signal. Le facteur
+// global domicile/extérieur (1.12/0.92) reste appliqué par-dessus comme
+// avantage de base (calibrable séparément plus tard), la force par équipe
+// capture maintenant l'écart RÉSIDUEL propre à chaque équipe.
+// Avec des équipes neutres (toutes les forces à 1.0, cas des équipes
+// simulées en tout début de backtest), on retrouve bien domicile=1.512 et
+// extérieur=1.242, comme avant ce changement (voir MOYENNE_BUTS_DOMICILE/
+// EXTERIEUR ci-dessous).
+// ⚠️ Nécessite une migration mekipro_equipes (colonnes attaque_dom,
+// defense_dom, attaque_ext, defense_ext, numeric, défaut 1.0) pour persister
+// correctement côté Supabase — voir chargerDonneesSupabase/
+// sauvegarderEquipeSupabase/ajouterEquipeSupabase plus bas, qui replient sur
+// l'ancienne colonne attaque/defense tant que la migration n'est pas faite.
 // ------------------------------------------------------------
 const MOYENNE_BUTS_LIGUE = 1.35;
 const FACTEUR_BUTS_DOMICILE = 1.12;
 const FACTEUR_BUTS_EXTERIEUR = 0.92;
+// CORRECTIF CRITIQUE — ces deux constantes étaient utilisées par
+// mettreAJourAttaqueDefense() (ecartAttaqueDom/ecartAttaqueExt) sans jamais
+// être définies nulle part dans le fichier : chaque appel (calibrage,
+// backtest, backtest cotes réelles, synchro) levait une ReferenceError et
+// interrompait silencieusement toute la mise à jour des forces d'équipe.
+// Valeurs cohérentes avec le commentaire ci-dessus (équipes neutres →
+// domicile=1.512, extérieur=1.242).
+const MOYENNE_BUTS_DOMICILE = MOYENNE_BUTS_LIGUE * FACTEUR_BUTS_DOMICILE;
+const MOYENNE_BUTS_EXTERIEUR = MOYENNE_BUTS_LIGUE * FACTEUR_BUTS_EXTERIEUR;
 
-function calculerButsAttendus(eqDom, eqExt, moyenneButsLigue = MOYENNE_BUTS_LIGUE) {
+// AJOUT (calibration par championnat) — voir calibrerConstantesLigues() plus
+// bas pour le détail. constantesGlobalesParDefaut()/constantesPourLigue()
+// permettent d'appeler calculerButsAttendus/calculerProbabilitesElo avec les
+// constantes propres à un championnat quand elles ont pu être calibrées
+// (sinon repli silencieux sur les constantes globales ci-dessus, comportement
+// inchangé par défaut).
+function constantesGlobalesParDefaut() {
   return {
-    domicile: eqDom.attaque * eqExt.defense * moyenneButsLigue * FACTEUR_BUTS_DOMICILE,
-    exterieur: eqExt.attaque * eqDom.defense * moyenneButsLigue * FACTEUR_BUTS_EXTERIEUR
+    moyenneButsLigue: MOYENNE_BUTS_LIGUE,
+    facteurButsDomicile: FACTEUR_BUTS_DOMICILE,
+    facteurButsExterieur: FACTEUR_BUTS_EXTERIEUR,
+    avantageDomicileElo: AVANTAGE_DOMICILE_ELO,
+    calibree: false
+  };
+}
+
+function calculerButsAttendus(eqDom, eqExt, constantes = constantesGlobalesParDefaut()) {
+  return {
+    domicile: eqDom.attaqueDom * eqExt.defenseExt * constantes.moyenneButsLigue * constantes.facteurButsDomicile,
+    exterieur: eqExt.attaqueExt * eqDom.defenseDom * constantes.moyenneButsLigue * constantes.facteurButsExterieur
   };
 }
 
@@ -655,6 +749,19 @@ function calculerButsAttendus(eqDom, eqExt, moyenneButsLigue = MOYENNE_BUTS_LIGU
 const RHO_DIXON_COLES_DEFAUT = -0.13; // estimation historique Dixon & Coles (1997)
 let rhoDixonColesActuel = RHO_DIXON_COLES_DEFAUT;
 function setRhoDixonColesActuel(rho) { rhoDixonColesActuel = rho; }
+
+// ============================================================
+// AJOUT (PUISSANCE-01) — poids de fusion Elo/Poisson appris sur l'historique.
+// Avant : calculerProbabilites() fusionnait les deux signaux à 50/50, une
+// constante jamais justifiée par les données. Ici, poidsFusionEloActuel
+// (0 = 100% Poisson/Dixon-Coles, 1 = 100% Elo) est calibré par maximum de
+// vraisemblance sur le résultat 1X2 RÉEL de chaque match historique — voir
+// calibrerParametresModele() plus bas, qui calibre rho ET ce poids en un seul
+// passage walk-forward.
+// ============================================================
+const POIDS_FUSION_ELO_DEFAUT = 0.5;
+let poidsFusionEloActuel = POIDS_FUSION_ELO_DEFAUT;
+function setPoidsFusionEloActuel(poids) { poidsFusionEloActuel = poids; }
 
 function tauDixonColes(x, y, lambda, mu, rho) {
   if (x === 0 && y === 0) return 1 - (lambda * mu * rho);
@@ -739,8 +846,8 @@ function marchesDepuisMatrice(matrice) {
 // Marchés dérivés uniquement du signal Poisson/Dixon-Coles (xG + corrélation
 // des scores bas). Utilisé seul par le backtest et fusionné à 50/50 avec le
 // signal Elo par calculerProbabilites() ci-dessous.
-function calculerProbabilitesPoisson(eqDom, eqExt, rho = rhoDixonColesActuel) {
-  const xg = calculerButsAttendus(eqDom, eqExt);
+function calculerProbabilitesPoisson(eqDom, eqExt, rho = rhoDixonColesActuel, constantes = constantesGlobalesParDefaut()) {
+  const xg = calculerButsAttendus(eqDom, eqExt, constantes);
   const matrice = construireMatriceScores(xg.domicile, xg.exterieur, rho);
   return { ...marchesDepuisMatrice(matrice), xg };
 }
@@ -749,20 +856,131 @@ function calculerProbabilitesPoisson(eqDom, eqExt, rho = rhoDixonColesActuel) {
 // Le 1X2 (et le nul) mélange Elo + Poisson/Dixon-Coles ; tous les autres
 // marchés (over/under, BTTS, handicap, score exact) viennent uniquement du
 // signal Poisson, qui est seul à modéliser des buts.
-function calculerProbabilites(eqDom, eqExt, rho = rhoDixonColesActuel) {
-  const poissonSignal = calculerProbabilitesPoisson(eqDom, eqExt, rho);
-  const eloSignal = calculerProbabilitesElo(eqDom, eqExt);
+// AJOUT (calibration par championnat) — `ligue` (optionnel, texte libre du
+// match) sélectionne les constantes calibrées pour CE championnat si elles
+// existent (voir calibrerConstantesLigues()/constantesPourLigue() plus bas),
+// sinon repli silencieux sur les constantes globales par défaut.
+// ============================================================
+// CONFRONTATIONS DIRECTES / HEAD-TO-HEAD (AUDIT PUISSANCE — "confrontations
+// directes (head-to-head) non utilisées") — AJOUT
+// ------------------------------------------------------------
+// Table { "idA|idB" (idA<idB, clé symétrique) : [vainqueurId|null, ...] },
+// une entrée par confrontation passée entre CES deux équipes précises
+// (n'importe quel côté domicile/extérieur), dans l'ordre chronologique.
+// null = match nul. Volontairement SANS distinction domicile/extérieur au
+// sein du h2h lui-même (voir justification dans calculerProbabilites) : ça
+// garde un échantillon plus grand tout en captant un vrai signal connu du
+// football (certaines équipes ont un "mauvais matchup" contre certaines
+// autres, indépendamment du terrain).
+//
+// DEUX CHEMINS D'UTILISATION, pour éviter toute fuite d'information :
+//  - PRODUCTION (pronostic d'un match à venir) : construireH2H() une seule
+//    fois sur TOUT l'historique connu (100% dans le passé par définition,
+//    aucun risque), puis statsH2H() lit le cache global h2hParPaireEquipes.
+//  - BACKTEST (walk-forward) : la table doit être reconstruite
+//    INCRÉMENTALEMENT match par match (enregistrerH2H après chaque match
+//    résolu, jamais avant) — sinon un match de la 30e journée "verrait"
+//    déjà le résultat d'un match de la 5e journée retour pas encore joué à
+//    l'époque simulée. Voir l'usage de statsH2HDepuisTable() avec une table
+//    locale dans backtester()/backtesterCotesReelles().
+// ============================================================
+function cleH2H(idA, idB) {
+  return idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
+}
 
-  const domicileBrut = (poissonSignal.domicile + eloSignal.domicile) / 2;
-  const nulBrut = (poissonSignal.nul + eloSignal.nul) / 2;
-  const exterieurBrut = (poissonSignal.exterieur + eloSignal.exterieur) / 2;
+function enregistrerH2H(table, idDom, idExt, resultat) {
+  const cle = cleH2H(idDom, idExt);
+  const vainqueur = resultat === '1' ? idDom : resultat === '2' ? idExt : null;
+  (table[cle] = table[cle] || []).push(vainqueur);
+}
+
+function statsH2HDepuisTable(table, idDom, idExt) {
+  const confrontations = table[cleH2H(idDom, idExt)] || [];
+  const n = confrontations.length;
+  if (!n) return { n: 0, probaDom: null, probaNul: null, probaExt: null };
+  let vDom = 0, vExt = 0;
+  confrontations.forEach(vainqueur => {
+    if (vainqueur === idDom) vDom++;
+    else if (vainqueur === idExt) vExt++;
+  });
+  return { n, probaDom: vDom / n, probaNul: (n - vDom - vExt) / n, probaExt: vExt / n };
+}
+
+let h2hParPaireEquipes = {};
+function construireH2H(matchsHistoriques) {
+  const table = {};
+  matchsHistoriques.forEach(m => {
+    if (m.resultat) enregistrerH2H(table, m.equipe_domicile_id, m.equipe_exterieur_id, m.resultat);
+  });
+  h2hParPaireEquipes = table;
+  return table;
+}
+function statsH2H(idDom, idExt) {
+  return statsH2HDepuisTable(h2hParPaireEquipes, idDom, idExt);
+}
+
+// Poids accordé au signal H2H dans le blend final : nul sous NB_H2H_MIN
+// confrontations connues (échantillon trop maigre, souvent 1-2 matchs, pour
+// dire quoi que ce soit de fiable) ; croît ensuite linéairement jusqu'à
+// NB_H2H_POUR_POIDS_MAX confrontations, où il plafonne à POIDS_H2H_MAX —
+// jamais plus, même avec 30 ans de confrontations : le h2h reste un signal
+// d'appoint, jamais dominant face au rating/forme/xG.
+const NB_H2H_MIN = 3;
+const NB_H2H_POUR_POIDS_MAX = 10;
+const POIDS_H2H_MAX = 0.15;
+function poidsH2H(n) {
+  if (n == null || n < NB_H2H_MIN) return 0;
+  return Math.min(POIDS_H2H_MAX, POIDS_H2H_MAX * (n / NB_H2H_POUR_POIDS_MAX));
+}
+
+function calculerProbabilites(eqDom, eqExt, rho = rhoDixonColesActuel, poidsElo = poidsFusionEloActuel, ligue = null, h2h = null) {
+  const constantes = constantesPourLigue(ligue);
+  const poissonSignal = calculerProbabilitesPoisson(eqDom, eqExt, rho, constantes);
+  const eloSignal = calculerProbabilitesElo(eqDom, eqExt, constantes.avantageDomicileElo);
+
+  // AJOUT (PUISSANCE-01) — poids appris (voir calibrerParametresModele), plus
+  // de 50/50 arbitraire. poidsElo=1 => 100% Elo, poidsElo=0 => 100% Poisson.
+  const domicileBrut = poidsElo * eloSignal.domicile + (1 - poidsElo) * poissonSignal.domicile;
+  const nulBrut = poidsElo * eloSignal.nul + (1 - poidsElo) * poissonSignal.nul;
+  const exterieurBrut = poidsElo * eloSignal.exterieur + (1 - poidsElo) * poissonSignal.exterieur;
   const somme = domicileBrut + nulBrut + exterieurBrut;
+  let domicile = domicileBrut / somme, nul = nulBrut / somme, exterieur = exterieurBrut / somme;
+
+  // ============================================================
+  // CONFRONTATIONS DIRECTES / HEAD-TO-HEAD (AUDIT PUISSANCE — "confrontations
+  // directes (head-to-head) non utilisées") — AJOUT
+  // ------------------------------------------------------------
+  // `h2h` (optionnel, voir statsH2H()/statsH2HDepuisTable() plus bas) résume
+  // l'historique des confrontations entre CES DEUX équipes précises (toutes
+  // configurations domicile/extérieur confondues — simplification déclarée :
+  // séparer par côté réduirait encore l'échantillon déjà petit). Blend avec
+  // un poids qui croît avec le nombre de confrontations connues, plafonné à
+  // POIDS_H2H_MAX même avec un historique H2H énorme (voir poidsH2H()) — un
+  // édito bien connu en pronostics sportifs est de surpondérer 2-3 vieux
+  // face-à-face ; ce plafond et ce seuil minimum (NB_H2H_MIN) l'empêchent
+  // explicitement. Neutre (poids nul) si h2h est absent ou sous le seuil.
+  // ============================================================
+  const poidsHH = h2h ? poidsH2H(h2h.n) : 0;
+  if (poidsHH > 0) {
+    const domicileHH = (1 - poidsHH) * domicile + poidsHH * h2h.probaDom;
+    const nulHH = (1 - poidsHH) * nul + poidsHH * h2h.probaNul;
+    const exterieurHH = (1 - poidsHH) * exterieur + poidsHH * h2h.probaExt;
+    const sommeHH = domicileHH + nulHH + exterieurHH;
+    domicile = domicileHH / sommeHH; nul = nulHH / sommeHH; exterieur = exterieurHH / sommeHH;
+  }
 
   return {
     ...poissonSignal,
-    domicile: domicileBrut / somme,
-    nul: nulBrut / somme,
-    exterieur: exterieurBrut / somme
+    domicile, nul, exterieur,
+    // CORRECTIF (au passage, en modifiant ce bloc pour le H2H) — double
+    // chance recalculée depuis domicile/nul/exterieur FINAUX (fusion Elo/
+    // Poisson + H2H), pas depuis poissonSignal.doubleChance* qui restait
+    // basé sur le seul signal Poisson d'avant fusion — sinon la double
+    // chance affichée pouvait légèrement contredire le 1X2 affiché à côté.
+    doubleChance1X: domicile + nul,
+    doubleChanceX2: nul + exterieur,
+    doubleChance12: domicile + exterieur,
+    h2h: h2h || { n: 0, probaDom: null, probaNul: null, probaExt: null }
   };
 }
 
@@ -869,11 +1087,105 @@ function calculerEdge(proba, cote) {
   return +(((proba * cote) - 1) * 100).toFixed(1);
 }
 
+// ============================================================
+// RETRAIT DE L'OVERROUND (AUDIT PUISSANCE — "l'edge est calculé contre la
+// cote brute du bookmaker (avec marge) — pas de retrait de l'overround pour
+// comparer ta proba à la 'vraie' proba de marché avant edge, ce qui peut
+// légèrement fausser le ranking entre marchés à marges différentes") — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : comparer proba*cote-1 directement à travers des marchés dont la
+// marge bookmaker diffère (1X2 généralement autour de 5-6%, BTTS/handicaps
+// souvent plus larges) fausse le CLASSEMENT du "meilleur" candidat — un
+// edge mesuré sur un marché à faible marge n'est pas comparable tel quel à
+// un edge mesuré sur un marché à grosse marge, même si les deux dépassent 0.
+//
+// SOLUTION : pour chaque FAMILLE de marché qui partitionne réellement
+// l'espace des issues (1X2 à 3 voies ; over/under, BTTS, handicap à 2
+// voies chacun), on calcule la VRAIE proba de marché en retirant l'overround
+// (méthode proportionnelle standard : probaVraie_i = (1/cote_i) /
+// somme(1/cote_j) sur le groupe). On compare ensuite notre proba modèle à
+// CETTE proba dévigée — un edge informationnel homogène, comparable entre
+// marchés à marges différentes — plutôt qu'à la cote brute pour décider
+// quel candidat jouer en priorité.
+//
+// IMPORTANT : l'edge MONÉTAIRE (proba*cote-1) reste calculé sur la cote
+// BRUTE et reste le seul utilisé pour (a) le seuil de jouabilité (edge>0 —
+// retirer l'overround ne change jamais ce qu'on gagne réellement si le pari
+// est prix) et (b) la taille de mise Kelly (qui a besoin de la vraie cote
+// payée, pas d'une proba de marché théorique). Le retrait d'overround ne
+// sert QU'AU CLASSEMENT entre candidats de marchés différents.
+//
+// Double chance (1X/X2/12) n'est PAS une partition indépendante — ces trois
+// marchés se chevauchent entre eux ET avec 1X2 — donc jamais dévigués ici ;
+// ils gardent l'ancien classement par edge monétaire brut en repli.
+// ============================================================
+
+// Retire l'overround d'un groupe de cotes qui partitionnent un même
+// événement (toutes les issues possibles, une seule peut arriver). Renvoie
+// un tableau de probas "vraies" dans le même ordre, ou null partout si le
+// groupe est incomplet (au moins une cote manquante → dévig impossible).
+function retirerOverround(cotesGroupe) {
+  const impliquees = cotesGroupe.map(c => (c && c > 0) ? 1 / c : null);
+  if (impliquees.some(p => p == null)) return cotesGroupe.map(() => null);
+  const somme = impliquees.reduce((s, p) => s + p, 0);
+  if (!somme) return cotesGroupe.map(() => null);
+  return impliquees.map(p => p / somme);
+}
+
+// Calcule, pour chaque marché partitionné disponible dans `cotes` (même
+// format que calculerCotesMarche/cotesDepuisReel/cotesDepuisArchive), la
+// proba de marché dévigée correspondante. Clés alignées sur celles de
+// `probas` (calculerProbabilites) pour un rapprochement direct.
+function calculerProbasMarcheDevigees(cotes) {
+  const resultat = {};
+  const [pDom, pNul, pExt] = retirerOverround([cotes.domicile, cotes.nul, cotes.exterieur]);
+  resultat.domicile = pDom; resultat.nul = pNul; resultat.exterieur = pExt;
+  const [p15, m15] = retirerOverround([cotes.plus15, cotes.moins15]);
+  resultat.plus15 = p15; resultat.moins15 = m15;
+  const [p25, m25] = retirerOverround([cotes.plus25, cotes.moins25]);
+  resultat.plus25 = p25; resultat.moins25 = m25;
+  const [p35, m35] = retirerOverround([cotes.plus35, cotes.moins35]);
+  resultat.plus35 = p35; resultat.moins35 = m35;
+  const [btts, sansBtts] = retirerOverround([cotes.btts, cotes.sansBtts]);
+  resultat.btts = btts; resultat.sansBtts = sansBtts;
+  const [hDom, hExt] = retirerOverround([cotes.handicapDom1, cotes.handicapExt1]);
+  resultat.handicapDom1 = hDom; resultat.handicapExt1 = hExt;
+  // Chevauchent 1X2 entre eux : jamais une partition indépendante, jamais dévigués.
+  resultat.doubleChance1X = null; resultat.doubleChanceX2 = null; resultat.doubleChance12 = null;
+  return resultat;
+}
+
+// Sélectionne le meilleur candidat parmi une liste { choix, proba, cote,
+// cle }. Classement PAR PRIORITÉ sur l'edge informationnel (proba modèle -
+// proba marché dévigée) quand la proba de marché dévigée est disponible
+// pour ce candidat (comparaison équitable entre marchés à marges
+// différentes) ; repli sur l'edge monétaire brut sinon (double chance,
+// marché incomplet). Dans tous les cas, l'edge MONÉTAIRE doit rester
+// strictement positif pour qu'un candidat soit jouable : un edge
+// informationnel favorable ne suffit pas si proba*cote reste sous 1.
+function selectionnerMeilleurCandidat(candidats, cotes) {
+  const probasMarche = calculerProbasMarcheDevigees(cotes);
+  let meilleur = null;
+  candidats.forEach(c => {
+    if (!c.cote) return;
+    const edge = calculerEdge(c.proba, c.cote);
+    if (edge <= 0) return;
+    const probaMarche = c.cle ? probasMarche[c.cle] : null;
+    const edgeInfo = probaMarche != null ? +((c.proba - probaMarche) * 100).toFixed(1) : null;
+    const classement = edgeInfo != null ? edgeInfo : edge;
+    if (!meilleur || classement > meilleur.classement) {
+      meilleur = { ...c, edge, probaMarche, edgeInfo, classement };
+    }
+  });
+  return meilleur;
+}
+
 // CLV en % : positif = on a pris une cote plus généreuse que la clôture (on a
 // "battu la ligne"). Négatif = le marché s'est resserré contre nous après
 // notre prise.
 function calculerCLV(cotePrise, coteCloture) {
   if (!cotePrise || !coteCloture) return null;
+
   return +((((cotePrise / coteCloture)) - 1) * 100).toFixed(1);
 }
 
@@ -998,21 +1310,78 @@ const TAUX_APPRENTISSAGE_FORCE = 0.15;
 const BORNE_FORCE_MIN = 0.5;
 const BORNE_FORCE_MAX = 1.8;
 
-function mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, xgAvantMatch) {
+// ============================================================
+// CORRECTIF CRITIQUE (PUISSANCE-02) — mise à jour PAR CONTEXTE : un match
+// joué à domicile par eqDom ne met plus à jour que attaqueDom/defenseDom de
+// eqDom (ses forces "extérieur" restent inchangées ce match-ci, puisqu'il
+// n'a pas joué à l'extérieur) ; symétriquement pour eqExt côté attaqueExt/
+// defenseExt. Avant (PUISSANCE-01 et avant), une seule paire attaque/defense
+// par équipe était mise à jour quel que soit le contexte, moyennant de facto
+// les deux — perte d'un vrai signal domicile/extérieur par équipe.
+// ============================================================
+function mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, xgAvantMatch, xgReel = null, constantes = constantesGlobalesParDefaut()) {
   const clamp = v => Math.min(BORNE_FORCE_MAX, Math.max(BORNE_FORCE_MIN, v));
 
-  const ecartAttaqueDom = (butsDom - xgAvantMatch.domicile) / MOYENNE_BUTS_DOMICILE;
-  const ecartAttaqueExt = (butsExt - xgAvantMatch.exterieur) / MOYENNE_BUTS_EXTERIEUR;
+  // ============================================================
+  // xG RÉEL (AUDIT PUISSANCE — "pas de xG réel (tirs, xG Understat/FBref) —
+  // tout est reconstruit a posteriori depuis le score final, ce qui est
+  // plus bruité qu'un xG basé sur les tirs") — AJOUT
+  // ------------------------------------------------------------
+  // CONSTAT : le signal "observé" utilisé pour apprendre attaque/défense
+  // était jusqu'ici toujours le nombre de buts marqués — un tirage à très
+  // faible effectif (souvent 0 à 3 par équipe) qui mélange qualité de jeu
+  // ET chance de finition (un tir sur la barre puis un csc chanceux
+  // produisent le même "1-0" qu'une razzia stérile). Un xG basé sur les
+  // tirs réels (Understat/FBref : position, angle, partie du corps, type
+  // d'action pour chaque tir) mesure la qualité des occasions plutôt que
+  // leur conversion, et réduit donc le bruit de ce signal d'apprentissage.
+  //
+  // ⚠️ LIMITE ACTUELLE, à lire avant de croire que c'est branché : aucun
+  // flux Understat/FBref n'est connecté ici. Ces deux sites n'exposent pas
+  // d'API officielle (scraping fragile et limite de leurs CGU) — les
+  // brancher proprement demanderait soit un accès à un fournisseur payant
+  // qui republie du xG basé sur les tirs (certains plans API-Football
+  // l'incluent), soit un import manuel. Ce qui EST fait ici : la
+  // PLOMBERIE pour qu'un xG réel, une fois disponible pour un match précis
+  // (colonnes optionnelles xg_reel_domicile/xg_reel_exterieur sur
+  // mekipro_matchs, ou saisie manuelle via importerResultats), soit
+  // automatiquement préféré aux buts bruts pour CE match. Tant qu'aucune
+  // valeur n'est fournie (100% des matchs aujourd'hui), le comportement
+  // est identique à avant : repli silencieux sur les buts réels.
+  // ============================================================
+  const observeDom = xgReel && xgReel.domicile != null ? xgReel.domicile : butsDom;
+  const observeExt = xgReel && xgReel.exterieur != null ? xgReel.exterieur : butsExt;
+
+  // AJOUT (calibration par championnat) — normalisation par la moyenne de
+  // buts DE CE CHAMPIONNAT (constantes.moyenneButsLigue * facteur dom/ext)
+  // quand elle a pu être calibrée, au lieu des constantes globales
+  // MOYENNE_BUTS_DOMICILE/EXTERIEUR fixes pour tous les championnats.
+  const moyenneButsDomicileLigue = constantes.moyenneButsLigue * constantes.facteurButsDomicile;
+  const moyenneButsExterieurLigue = constantes.moyenneButsLigue * constantes.facteurButsExterieur;
+  const ecartAttaqueDom = (observeDom - xgAvantMatch.domicile) / moyenneButsDomicileLigue;
+  const ecartAttaqueExt = (observeExt - xgAvantMatch.exterieur) / moyenneButsExterieurLigue;
 
   return {
-    attaqueDom: clamp(eqDom.attaque * (1 + TAUX_APPRENTISSAGE_FORCE * ecartAttaqueDom)),
+    attaqueDom: clamp(eqDom.attaqueDom * (1 + TAUX_APPRENTISSAGE_FORCE * ecartAttaqueDom)),
     // la défense évolue à l'inverse de l'attaque adverse : encaisser plus que
     // prévu dégrade la défense (facteur qui augmente).
-    defenseDom: clamp(eqDom.defense * (1 + TAUX_APPRENTISSAGE_FORCE * ecartAttaqueExt)),
-    attaqueExt: clamp(eqExt.attaque * (1 + TAUX_APPRENTISSAGE_FORCE * ecartAttaqueExt)),
-    defenseExt: clamp(eqExt.defense * (1 + TAUX_APPRENTISSAGE_FORCE * ecartAttaqueDom))
+    defenseDom: clamp(eqDom.defenseDom * (1 + TAUX_APPRENTISSAGE_FORCE * ecartAttaqueExt)),
+    attaqueExt: clamp(eqExt.attaqueExt * (1 + TAUX_APPRENTISSAGE_FORCE * ecartAttaqueExt)),
+    defenseExt: clamp(eqExt.defenseExt * (1 + TAUX_APPRENTISSAGE_FORCE * ecartAttaqueDom))
   };
 }
+
+// Extrait le xG réel (Understat/FBref ou saisie manuelle) d'un objet match,
+// s'il existe — colonnes optionnelles xg_reel_domicile/xg_reel_exterieur sur
+// mekipro_matchs (⚠️ migration à créer, non appliquée par défaut ; voir note
+// sur mettreAJourAttaqueDefense ci-dessus pour la limite actuelle de cette
+// intégration — aucune source Understat/FBref n'est câblée automatiquement).
+// Retourne null si absent (comportement par défaut, identique à avant).
+function xgReelDepuisMatch(m) {
+  if (!m || m.xg_reel_domicile == null || m.xg_reel_exterieur == null) return null;
+  return { domicile: Number(m.xg_reel_domicile), exterieur: Number(m.xg_reel_exterieur) };
+}
+
 
 // ============================================================
 // CALIBRAGE AUTOMATIQUE DE RHO (Dixon-Coles) SUR L'HISTORIQUE RÉEL
@@ -1042,11 +1411,33 @@ const GRILLE_RHO = (() => {
   return grille;
 })();
 
-function calibrerRhoDixonColes(matchsHistoriques) {
+// AJOUT (PUISSANCE-01) — grille du poids de fusion Elo/Poisson (0 à 1, pas de
+// 0.05). 0 = tout Poisson/Dixon-Coles, 1 = tout Elo.
+const GRILLE_POIDS_FUSION = (() => {
+  const grille = [];
+  for (let vingtieme = 0; vingtieme <= 20; vingtieme++) grille.push(+(vingtieme / 20).toFixed(2));
+  return grille;
+})();
+
+// ============================================================
+// RENOMMÉ (PUISSANCE-01) — calibrerRhoDixonColes() devient calibrerParametresModele() :
+// un seul passage walk-forward chronologique (ratings/attaque/défense simulés
+// depuis un état neutre) capture désormais, par match : (lambda, mu, score
+// réel) POUR rho, ET (probas Elo pré-match, résultat 1X2 réel) POUR le poids
+// de fusion. Les deux paramètres sont ensuite calibrés par grid-search sur
+// leur propre grille, chacun par maximum de vraisemblance :
+//  1) rho sur la vraisemblance du score exact (Poisson bivarié + tau) ;
+//  2) le poids, à rho désormais fixé, sur la vraisemblance du résultat 1X2
+//     réel sous le mélange poids*Elo + (1-poids)*Poisson.
+// Comme pour rho, sous NB_MATCHS_MIN_POUR_CALIBRAGE matchs résolus, on garde
+// les valeurs de référence (poids 50/50, rho académique) plutôt qu'un
+// calibrage bruité sur un trop petit échantillon.
+// ============================================================
+function calibrerParametresModele(matchsHistoriques) {
   const equipesSimulees = {};
   const idEquipe = (id) => {
     if (!equipesSimulees[id]) {
-      equipesSimulees[id] = { id, rating: 1500, attaque: 1.0, defense: 1.0, matchs_joues: 0, forme: [] };
+      equipesSimulees[id] = { id, rating: 1500, attaqueDom: 1.0, defenseDom: 1.0, attaqueExt: 1.0, defenseExt: 1.0, matchs_joues: 0, forme: [] };
     }
     return equipesSimulees[id];
   };
@@ -1062,31 +1453,195 @@ function calibrerRhoDixonColes(matchsHistoriques) {
     const butsExt = parseInt((m.score || '0-0').split('-')[1], 10);
 
     const xg = calculerButsAttendus(eqDom, eqExt);
-    matchsCaptures.push({ lambda: xg.domicile, mu: xg.exterieur, butsDom, butsExt });
+    // AJOUT — capture aussi le signal Elo pré-match (avant toute mise à jour),
+    // nécessaire pour calibrer le poids de fusion juste après.
+    const eloProbas = calculerProbabilitesElo(eqDom, eqExt);
+    matchsCaptures.push({ lambda: xg.domicile, mu: xg.exterieur, butsDom, butsExt, resultat: m.resultat, eloProbas });
 
     const ecartButs = Math.abs(butsDom - butsExt) || 1;
     const nouveaux = mettreAJourRatings(eqDom, eqExt, m.resultat, ecartButs);
     eqDom.rating = nouveaux.domicile;
     eqExt.rating = nouveaux.exterieur;
-    const nouvellesForces = mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, xg);
-    eqDom.attaque = nouvellesForces.attaqueDom; eqDom.defense = nouvellesForces.defenseDom;
-    eqExt.attaque = nouvellesForces.attaqueExt; eqExt.defense = nouvellesForces.defenseExt;
+    const nouvellesForces = mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, xg, xgReelDepuisMatch(m));
+    eqDom.attaqueDom = nouvellesForces.attaqueDom; eqDom.defenseDom = nouvellesForces.defenseDom;
+    eqExt.attaqueExt = nouvellesForces.attaqueExt; eqExt.defenseExt = nouvellesForces.defenseExt;
     eqDom.matchs_joues++; eqExt.matchs_joues++;
   });
 
   if (matchsCaptures.length < NB_MATCHS_MIN_POUR_CALIBRAGE) {
-    return { rho: RHO_DIXON_COLES_DEFAUT, calibre: false, logVraisemblance: null };
+    return {
+      rho: RHO_DIXON_COLES_DEFAUT, rhoCalibre: false, logVraisemblanceRho: null,
+      poidsElo: POIDS_FUSION_ELO_DEFAUT, poidsCalibre: false, logVraisemblancePoids: null
+    };
   }
 
+  // 1) rho par maximum de vraisemblance sur le score exact
   let meilleurRho = RHO_DIXON_COLES_DEFAUT;
-  let meilleureLogVraisemblance = -Infinity;
+  let meilleureLogVraisemblanceRho = -Infinity;
   GRILLE_RHO.forEach(rho => {
     const lv = logVraisemblanceDixonColes(rho, matchsCaptures);
-    if (lv > meilleureLogVraisemblance) { meilleureLogVraisemblance = lv; meilleurRho = rho; }
+    if (lv > meilleureLogVraisemblanceRho) { meilleureLogVraisemblanceRho = lv; meilleurRho = rho; }
   });
 
-  return { rho: meilleurRho, calibre: true, logVraisemblance: +meilleureLogVraisemblance.toFixed(2) };
+  // 2) poids de fusion par maximum de vraisemblance sur le résultat 1X2 réel,
+  // à rho désormais fixé. Les probas Poisson 1X2 ne dépendent pas du poids :
+  // on les précalcule une seule fois par match, la grid-search ne recombine
+  // ensuite qu'un scalaire par candidat.
+  const matchsAvecPoisson1X2 = matchsCaptures.map(c => ({
+    resultat: c.resultat,
+    eloProbas: c.eloProbas,
+    poissonProbas: marchesDepuisMatrice(construireMatriceScores(c.lambda, c.mu, meilleurRho))
+  }));
+
+  let meilleurPoids = POIDS_FUSION_ELO_DEFAUT;
+  let meilleureLogVraisemblancePoids = -Infinity;
+  GRILLE_POIDS_FUSION.forEach(poids => {
+    let total = 0;
+    matchsAvecPoisson1X2.forEach(({ resultat, eloProbas, poissonProbas }) => {
+      const domicileBrut = poids * eloProbas.domicile + (1 - poids) * poissonProbas.domicile;
+      const nulBrut = poids * eloProbas.nul + (1 - poids) * poissonProbas.nul;
+      const exterieurBrut = poids * eloProbas.exterieur + (1 - poids) * poissonProbas.exterieur;
+      const somme = domicileBrut + nulBrut + exterieurBrut;
+      const probaResultat = resultat === '1' ? domicileBrut / somme : resultat === 'N' ? nulBrut / somme : exterieurBrut / somme;
+      total += Math.log(Math.max(probaResultat, 1e-10));
+    });
+    if (total > meilleureLogVraisemblancePoids) { meilleureLogVraisemblancePoids = total; meilleurPoids = poids; }
+  });
+
+  return {
+    rho: meilleurRho, rhoCalibre: true, logVraisemblanceRho: +meilleureLogVraisemblanceRho.toFixed(2),
+    poidsElo: meilleurPoids, poidsCalibre: true, logVraisemblancePoids: +meilleureLogVraisemblancePoids.toFixed(2)
+  };
 }
+
+// ============================================================
+// CALIBRATION PAR CHAMPIONNAT (AUDIT PUISSANCE — "MOYENNE_BUTS_LIGUE = 1.35,
+// avantage domicile 60 Elo, facteurs 1.12/0.92 : constantes globales, jamais
+// recalibrées par championnat ni réestimées comme rho l'est. Gros angle mort
+// si tu couvres plusieurs ligues.") — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : ces 4 constantes (moyenne de buts, avantage domicile Elo,
+// répartition domicile/extérieur de la moyenne de buts) sont des propriétés
+// d'UN championnat donné, pas des lois universelles du football — un
+// championnat très offensif (moyenne de buts élevée) ou avec un avantage du
+// terrain plus marqué (foules, voyages, arbitrage local...) qu'un autre
+// utilisait pourtant exactement les mêmes valeurs académiques que tout le
+// reste. Ça biaise le xG et les probas 1X2 de tout championnat qui s'écarte
+// de la moyenne générique.
+//
+// PRINCIPE RETENU : recalibrer, PAR CHAMPIONNAT (m.ligue, texte libre déjà
+// présent sur les matchs), quand l'échantillon de ce championnat est assez
+// grand (NB_MATCHS_MIN_POUR_CALIBRAGE_LIGUE, sous ce seuil on garde les
+// constantes globales pour ce championnat plutôt qu'un calibrage bruité) :
+//   - moyenneButsLigue / facteurButsDomicile / facteurButsExterieur : calcul
+//     EMPIRIQUE direct (moyenne réelle des buts marqués à domicile/extérieur
+//     dans ce championnat) — ce sont des quantités observables, pas besoin
+//     d'un maximum de vraisemblance pour ça.
+//   - avantageDomicileElo : par maximum de vraisemblance sur le résultat 1X2
+//     réel du signal Elo SEUL (même principe exactement que le calibrage de
+//     rho ci-dessus, appliqué à ce paramètre), avec un walk-forward de
+//     ratings propre à ce championnat (état neutre, comme calibrerParametresModele).
+//
+// Résultat mis en cache dans constantesParLigue, relu par constantesPourLigue()
+// à chaque calcul de proba (calculerProbabilites) — un calibrage par lancement
+// de backtest, pas un recalcul à chaque match.
+// ============================================================
+const NB_MATCHS_MIN_POUR_CALIBRAGE_LIGUE = 30;
+const GRILLE_AVANTAGE_ELO = Array.from({ length: 11 }, (_, i) => i * 10); // 0, 10, ..., 100
+
+let constantesParLigue = {};
+
+// Constantes effectivement utilisées pour un match : celles calibrées pour
+// SA ligue si elles existent et si l'échantillon était suffisant, sinon
+// repli silencieux sur les constantes globales (comportement par défaut,
+// identique à avant cet ajout, pour tout championnat non encore calibré).
+function constantesPourLigue(ligue) {
+  if (!ligue) return constantesGlobalesParDefaut();
+  const c = constantesParLigue[ligue];
+  return (c && c.calibree) ? c : constantesGlobalesParDefaut();
+}
+
+function calibrerConstantesLigues(matchsHistoriques) {
+  const parLigue = {};
+  matchsHistoriques.forEach(m => {
+    if (!m.resultat || !m.ligue) return;
+    (parLigue[m.ligue] = parLigue[m.ligue] || []).push(m);
+  });
+
+  const resultat = {};
+  Object.keys(parLigue).forEach(ligue => {
+    const matchsLigue = [...parLigue[ligue]].sort((a, b) => new Date(a.date_match) - new Date(b.date_match));
+    if (matchsLigue.length < NB_MATCHS_MIN_POUR_CALIBRAGE_LIGUE) {
+      resultat[ligue] = { ...constantesGlobalesParDefaut(), nbMatchs: matchsLigue.length };
+      return;
+    }
+
+    // --- Empirique : moyenne de buts réellement observée dans CE championnat ---
+    let sommeButsDom = 0, sommeButsExt = 0;
+    matchsLigue.forEach(m => {
+      sommeButsDom += parseInt((m.score || '0-0').split('-')[0], 10) || 0;
+      sommeButsExt += parseInt((m.score || '0-0').split('-')[1], 10) || 0;
+    });
+    const moyenneButsDomicile = sommeButsDom / matchsLigue.length;
+    const moyenneButsExterieur = sommeButsExt / matchsLigue.length;
+    const moyenneButsLigue = (moyenneButsDomicile + moyenneButsExterieur) / 2;
+    const facteurButsDomicile = moyenneButsLigue > 0 ? moyenneButsDomicile / moyenneButsLigue : FACTEUR_BUTS_DOMICILE;
+    const facteurButsExterieur = moyenneButsLigue > 0 ? moyenneButsExterieur / moyenneButsLigue : FACTEUR_BUTS_EXTERIEUR;
+
+    // --- Avantage domicile Elo : walk-forward propre à ce championnat, puis
+    // grid search par maximum de vraisemblance (même principe que rho) ---
+    const equipesSimulees = {};
+    const idEquipe = (id) => {
+      if (!equipesSimulees[id]) equipesSimulees[id] = { id, rating: 1500, forme: [] };
+      return equipesSimulees[id];
+    };
+    const captures = [];
+    matchsLigue.forEach(m => {
+      const eqDom = idEquipe(m.equipe_domicile_id);
+      const eqExt = idEquipe(m.equipe_exterieur_id);
+      captures.push({
+        eqSnapshotDom: { rating: eqDom.rating, forme: [...eqDom.forme] },
+        eqSnapshotExt: { rating: eqExt.rating, forme: [...eqExt.forme] },
+        resultat: m.resultat
+      });
+      const bd = parseInt((m.score || '0-0').split('-')[0], 10) || 0;
+      const be = parseInt((m.score || '0-0').split('-')[1], 10) || 0;
+      const ecartButs = Math.abs(bd - be) || 1;
+      const nouveaux = mettreAJourRatings(eqDom, eqExt, m.resultat, ecartButs);
+      eqDom.rating = nouveaux.domicile; eqExt.rating = nouveaux.exterieur;
+      const scoreDom = m.resultat === '1' ? 1 : m.resultat === 'N' ? 0.5 : 0;
+      const scoreExt = m.resultat === '2' ? 1 : m.resultat === 'N' ? 0.5 : 0;
+      eqDom.forme = [...eqDom.forme, scoreDom].slice(-8);
+      eqExt.forme = [...eqExt.forme, scoreExt].slice(-8);
+    });
+
+    let meilleurAvantage = AVANTAGE_DOMICILE_ELO;
+    let meilleureLogVraisemblance = -Infinity;
+    GRILLE_AVANTAGE_ELO.forEach(avantage => {
+      let total = 0;
+      captures.forEach(c => {
+        const probasElo = calculerProbabilitesElo(c.eqSnapshotDom, c.eqSnapshotExt, avantage);
+        const p = c.resultat === '1' ? probasElo.domicile : c.resultat === 'N' ? probasElo.nul : probasElo.exterieur;
+        total += Math.log(Math.max(p, 1e-10));
+      });
+      if (total > meilleureLogVraisemblance) { meilleureLogVraisemblance = total; meilleurAvantage = avantage; }
+    });
+
+    resultat[ligue] = {
+      moyenneButsLigue: +moyenneButsLigue.toFixed(3),
+      facteurButsDomicile: +facteurButsDomicile.toFixed(3),
+      facteurButsExterieur: +facteurButsExterieur.toFixed(3),
+      avantageDomicileElo: meilleurAvantage,
+      logVraisemblanceAvantage: +meilleureLogVraisemblance.toFixed(2),
+      nbMatchs: matchsLigue.length,
+      calibree: true
+    };
+  });
+
+  constantesParLigue = resultat;
+  return resultat;
+}
+
 // ============================================================
 // CONFIGURATION SUPABASE — à remplir avec tes propres identifiants
 // ============================================================
@@ -1189,7 +1744,17 @@ async function soumettreAuth() {
 }
 
 async function deconnexion() {
-  if (supabaseClient) await supabaseClient.auth.signOut();
+  if (!supabaseClient) return;
+  try {
+    const { error } = await supabaseClient.auth.signOut();
+    if (error) console.warn('Déconnexion Supabase échouée :', error.message);
+  } catch (e) {
+    // Coupure réseau ou autre échec bas niveau : on prévient plutôt que de
+    // laisser croire à l'utilisateur qu'il est déconnecté alors que non
+    // (onAuthStateChange ne se déclenchera pas si signOut() n'a pas abouti).
+    console.warn('Déconnexion échouée (réseau ?) :', e.message);
+    alert("La déconnexion a échoué (problème réseau). Réessaie.");
+  }
 }
 
 function mettreAJourUIAuth() {
@@ -1394,7 +1959,7 @@ async function synchroniserEvenementsLive() {
 // différente quand le score est encore serré). Le facteur tau ci-dessous
 // corrige uniquement ces 4 cases ; toutes les autres cases restent inchangées
 // (tau = 1). rho est le paramètre à calibrer sur des données réelles — voir
-// calibrerRhoDixonColes() plus bas.
+// calibrerParametresModele() plus bas.
 // ============================================================
 
 // Valeur par défaut = estimation historique de Dixon & Coles (1997) sur les
@@ -1404,7 +1969,7 @@ async function synchroniserEvenementsLive() {
 // cette constante n'est alors utilisée qu'au tout premier lancement.
 // rho effectivement utilisé par le moteur de suggestions en production ;
 // mis à jour automatiquement à chaque calcul de backtest (calibrage sur
-// l'historique réel disponible). Voir calibrerRhoDixonColes().
+// l'historique réel disponible). Voir calibrerParametresModele().
 
 // Construit la matrice de scores probables (0-0, 1-0, 0-1, ... jusqu'à 8-8),
 // APPLIQUE la correction Dixon-Coles puis RENORMALISE (tau déforme légèrement
@@ -1457,6 +2022,10 @@ async function synchroniserEvenementsLive() {
 // que Supabase est connecté : plus aucun edge fictif.
 // ============================================================
 let cotesReellesParMatch = {};
+// AJOUT (COMPOSITIONS) — joueurs clés déclarés manuellement par équipe, voir
+// module COMPOSITIONS D'ÉQUIPE plus bas. Chargé depuis mekipro_joueurs_cles
+// (voir chargerDonneesSupabase). Forme : { [equipe_id]: [{id, nom, poste, poids}] }.
+let joueursClesParEquipe = {};
 
 function cotesVide() {
   return {
@@ -1486,6 +2055,39 @@ function cotesDepuisReel(matchId) {
     doubleChanceX2: c.double_chance_x2 ?? null,
     doubleChance12: c.double_chance_12 ?? null,
     handicapDom1: null, handicapExt1: null
+  };
+}
+
+// AJOUT (line shopping) — le serveur (sync-matchs) écrit déjà une ligne
+// bookmaker='__meilleures__' par match, avec la meilleure cote de CHAQUE
+// marché tous bookmakers confondus, plus un attribut meilleures_cotes
+// { marché: nom_du_bookmaker } qui dit QUI propose ce prix. Jusqu'ici ce
+// champ était chargé en base mais jamais lu côté client (cotesDepuisReel
+// se contentait des valeurs). Cette fonction reconstruit, pour un match,
+// une table { marché_UI: nom_bookmaker } utilisée par renderMarketsHTML
+// pour afficher "chez X" sous chaque cote et par ajouterAuCarnet pour
+// mémoriser où le pari a réellement été pris (voir classement bookmakers).
+// Clés alignées sur celles utilisées dans renderMarketsHTML (pas les noms
+// de colonnes SQL) : seules celles qu'on affiche réellement sont mappées.
+function attributionBookmakerParMatch(matchId) {
+  const c = cotesReellesParMatch[matchId];
+  if (!c) return {};
+  if (c.bookmaker === '__meilleures__' && c.meilleures_cotes && typeof c.meilleures_cotes === 'object') {
+    const m = c.meilleures_cotes;
+    return {
+      '1': m.domicile ?? null, 'N': m.nul ?? null, '2': m.exterieur ?? null,
+      'Double Chance 1X': m.double_chance_1x ?? null,
+      'Double Chance X2': m.double_chance_x2 ?? null,
+      'Double Chance 12': m.double_chance_12 ?? null,
+      'Plus 2.5': m.plus25 ?? null, 'Moins 2.5': m.moins25 ?? null,
+      'BTTS': m.btts ?? null, 'Sans BTTS': m.sans_btts ?? null
+    };
+  }
+  const nom = c.bookmaker === '__consensus__' ? 'moyenne marché' : (c.bookmaker || null);
+  return {
+    '1': nom, 'N': nom, '2': nom,
+    'Double Chance 1X': nom, 'Double Chance X2': nom, 'Double Chance 12': nom,
+    'Plus 2.5': nom, 'Moins 2.5': nom, 'BTTS': nom, 'Sans BTTS': nom
   };
 }
 
@@ -1643,6 +2245,10 @@ function genererRaison(eqDom, eqExt, choix, edge, xg) {
 
 // Génère les suggestions multi-marchés pour un ensemble de matchs à venir
 function genererSuggestions(matchs, equipesById, marge = 0.06) {
+  // AJOUT (head-to-head) — cache global reconstruit sur tout l'historique
+  // connu (100% dans le passé par rapport à des matchs "à venir", donc sans
+  // risque de fuite), relu par statsH2H() ci-dessous pour chaque match.
+  construireH2H(demoMatchsHistoriques);
   const suggestions = [];
   matchs.forEach(m => {
     const eqDomBrut = equipesById[m.equipe_domicile_id];
@@ -1651,9 +2257,9 @@ function genererSuggestions(matchs, equipesById, marge = 0.06) {
     // AJOUT — fatigue/calendrier : équipes ajustées selon leur repos avant CE
     // match précis (voir equipesAjusteesFatigue). eqDomBrut/eqExtBrut restent
     // utilisés pour genererRaison() ci-dessous (nom, forme d'origine).
-    const { eqDom, eqExt } = equipesAjusteesFatigue(eqDomBrut, eqExtBrut, m.date_match, m.id);
+    const { eqDom, eqExt } = equipesAjusteesCalendrier(eqDomBrut, eqExtBrut, m.date_match, m.id, m);
 
-    const probas = calculerProbabilites(eqDom, eqExt);
+    const probas = calculerProbabilites(eqDom, eqExt, rhoDixonColesActuel, poidsFusionEloActuel, m.ligue, statsH2H(m.equipe_domicile_id, m.equipe_exterieur_id));
     // MODE_DEMO : marché simulé (aucune donnée réelle disponible). Sinon :
     // uniquement les vraies cotes bookmaker synchronisées ; pas de cotes
     // réelles pour ce match → on ne peut pas juger d'un vrai edge, on
@@ -1663,30 +2269,27 @@ function genererSuggestions(matchs, equipesById, marge = 0.06) {
     const matchsJoues = Math.min(eqDom.matchs_joues || 10, eqExt.matchs_joues || 10);
 
     const candidats = [
-      { choix: '1', proba: probas.domicile, cote: cotes.domicile },
-      { choix: 'N', proba: probas.nul, cote: cotes.nul },
-      { choix: '2', proba: probas.exterieur, cote: cotes.exterieur },
-      { choix: 'Double Chance 1X', proba: probas.doubleChance1X, cote: cotes.doubleChance1X },
-      { choix: 'Double Chance X2', proba: probas.doubleChanceX2, cote: cotes.doubleChanceX2 },
-      { choix: 'Double Chance 12', proba: probas.doubleChance12, cote: cotes.doubleChance12 },
-      { choix: 'Plus 1.5', proba: probas.plus15, cote: cotes.plus15 },
-      { choix: 'Moins 1.5', proba: probas.moins15, cote: cotes.moins15 },
-      { choix: 'Plus 2.5', proba: probas.plus25, cote: cotes.plus25 },
-      { choix: 'Moins 2.5', proba: probas.moins25, cote: cotes.moins25 },
-      { choix: 'Plus 3.5', proba: probas.plus35, cote: cotes.plus35 },
-      { choix: 'Moins 3.5', proba: probas.moins35, cote: cotes.moins35 },
-      { choix: 'BTTS', proba: probas.btts, cote: cotes.btts },
-      { choix: 'Sans BTTS', proba: probas.sansBtts, cote: cotes.sansBtts },
-      { choix: 'Handicap -1 Domicile', proba: probas.handicapDom1, cote: cotes.handicapDom1 },
-      { choix: 'Handicap +1 Extérieur', proba: probas.handicapExt1, cote: cotes.handicapExt1 }
+      { choix: '1', proba: probas.domicile, cote: cotes.domicile, cle: 'domicile' },
+      { choix: 'N', proba: probas.nul, cote: cotes.nul, cle: 'nul' },
+      { choix: '2', proba: probas.exterieur, cote: cotes.exterieur, cle: 'exterieur' },
+      { choix: 'Double Chance 1X', proba: probas.doubleChance1X, cote: cotes.doubleChance1X, cle: 'doubleChance1X' },
+      { choix: 'Double Chance X2', proba: probas.doubleChanceX2, cote: cotes.doubleChanceX2, cle: 'doubleChanceX2' },
+      { choix: 'Double Chance 12', proba: probas.doubleChance12, cote: cotes.doubleChance12, cle: 'doubleChance12' },
+      { choix: 'Plus 1.5', proba: probas.plus15, cote: cotes.plus15, cle: 'plus15' },
+      { choix: 'Moins 1.5', proba: probas.moins15, cote: cotes.moins15, cle: 'moins15' },
+      { choix: 'Plus 2.5', proba: probas.plus25, cote: cotes.plus25, cle: 'plus25' },
+      { choix: 'Moins 2.5', proba: probas.moins25, cote: cotes.moins25, cle: 'moins25' },
+      { choix: 'Plus 3.5', proba: probas.plus35, cote: cotes.plus35, cle: 'plus35' },
+      { choix: 'Moins 3.5', proba: probas.moins35, cote: cotes.moins35, cle: 'moins35' },
+      { choix: 'BTTS', proba: probas.btts, cote: cotes.btts, cle: 'btts' },
+      { choix: 'Sans BTTS', proba: probas.sansBtts, cote: cotes.sansBtts, cle: 'sansBtts' },
+      { choix: 'Handicap -1 Domicile', proba: probas.handicapDom1, cote: cotes.handicapDom1, cle: 'handicapDom1' },
+      { choix: 'Handicap +1 Extérieur', proba: probas.handicapExt1, cote: cotes.handicapExt1, cle: 'handicapExt1' }
     ];
 
-    let meilleur = null;
-    candidats.forEach(c => {
-      if (!c.cote) return;
-      const edge = calculerEdge(c.proba, c.cote);
-      if (!meilleur || edge > meilleur.edge) meilleur = { ...c, edge };
-    });
+    // AJOUT (retrait overround) — classement par edge informationnel dévigé
+    // quand disponible, voir selectionnerMeilleurCandidat() plus haut.
+    const meilleur = selectionnerMeilleurCandidat(candidats, cotes);
 
     if (meilleur && meilleur.edge > 0) {
       suggestions.push({
@@ -1752,6 +2355,8 @@ function genererRaisonModele(eqDom, eqExt, choix, probaPct, xg) {
 
 // Génère un pronostic pur (sans cote) pour chaque match à venir.
 function genererPronosticsModele(matchs, equipesById) {
+  // AJOUT (head-to-head) — voir justification dans genererSuggestions() ci-dessus.
+  construireH2H(demoMatchsHistoriques);
   const pronostics = [];
   matchs.forEach(m => {
     const eqDomBrut = equipesById[m.equipe_domicile_id];
@@ -1759,8 +2364,8 @@ function genererPronosticsModele(matchs, equipesById) {
     if (!eqDomBrut || !eqExtBrut) return;
     // Même ajustement fatigue/calendrier que genererSuggestions(), pour que
     // le pronostic pur et le value bet du même match restent cohérents.
-    const { eqDom, eqExt } = equipesAjusteesFatigue(eqDomBrut, eqExtBrut, m.date_match, m.id);
-    const probas = calculerProbabilites(eqDom, eqExt);
+    const { eqDom, eqExt } = equipesAjusteesCalendrier(eqDomBrut, eqExtBrut, m.date_match, m.id, m);
+    const probas = calculerProbabilites(eqDom, eqExt, rhoDixonColesActuel, poidsFusionEloActuel, m.ligue, statsH2H(m.equipe_domicile_id, m.equipe_exterieur_id));
     const matchsJoues = Math.min(eqDom.matchs_joues || 10, eqExt.matchs_joues || 10);
 
     const candidats = [
@@ -1840,6 +2445,51 @@ function legsPartagentEquipe(legs) {
   return false;
 }
 
+// ============================================================
+// CORRÉLATION RÉSIDUELLE ENTRE LÉGS (AUDIT PUISSANCE — "les combinés
+// supposent une indépendance totale entre légs de matchs différents —
+// correct en général, mais aucune vérification de corrélation résiduelle
+// (même journée, même championnat)") — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : probaCombinee = produit des probas individuelles suppose une
+// indépendance stricte entre légs. legsPartagentEquipe() exclut déjà le cas
+// le plus flagrant (même équipe dans 2 légs). Mais deux matchs SANS équipe
+// commune, joués le même jour dans le même championnat, restent exposés à
+// des facteurs partagés qui les corrèlent un peu (même trêve internationale
+// juste avant, même vague météo, même dynamique de journée — équipes du
+// haut de tableau qui enchaînent les victoires en même temps, calendrier
+// d'arbitres du même week-end...). Une corrélation positive entre légs fait
+// que le PRODUIT des probas individuelles SURESTIME légèrement la vraie
+// probabilité combinée (les résultats ont tendance à "aller ensemble" plus
+// souvent que l'indépendance ne le prédit).
+//
+// PRINCIPE RETENU : pas assez de données historiques pour ESTIMER la
+// vraie corrélation résiduelle (demanderait des centaines de tickets
+// combinés résolus par paire de championnats). On applique donc une DÉCOTE
+// CONSERVATRICE forfaitaire, pas une mesure : pour chaque paire de légs qui
+// partagent à la fois la même date (jour civil) ET le même championnat, on
+// réduit la probaCombinee de FACTEUR_DECOTE_CORRELATION_JOURNEE. Plusieurs
+// paires corrélées dans un même ticket cumulent la décote (exponentielle).
+// Objectif : ne jamais laisser un combiné paraître plus sûr qu'il ne l'est
+// vraiment à cause d'un chevauchement de calendrier, pas de sortir un
+// chiffre de corrélation précis qu'on n'a pas les moyens de mesurer ici.
+// ============================================================
+const FACTEUR_DECOTE_CORRELATION_JOURNEE = 0.95; // -5% multiplicatif par paire de légs même jour + même championnat
+
+function nbPairesCorreleesMemeJournee(legs) {
+  let n = 0;
+  for (let i = 0; i < legs.length; i++) {
+    for (let j = i + 1; j < legs.length; j++) {
+      const dateI = legs[i].match.date_match ? new Date(legs[i].match.date_match).toDateString() : null;
+      const dateJ = legs[j].match.date_match ? new Date(legs[j].match.date_match).toDateString() : null;
+      const memeJour = dateI && dateJ && dateI === dateJ;
+      const memeLigue = legs[i].match.ligue && legs[j].match.ligue && legs[i].match.ligue === legs[j].match.ligue;
+      if (memeJour && memeLigue) n++;
+    }
+  }
+  return n;
+}
+
 function genererTickets(suggestions, options = {}) {
   const {
     edgeMin = 3,              // % edge minimum par sélection individuelle
@@ -1870,7 +2520,13 @@ function genererTickets(suggestions, options = {}) {
       // legsPartagentEquipe) plutôt que d'afficher une probabilité combinée
       // artificiellement optimiste sur un ticket réellement corrélé.
       if (k > 1 && legsPartagentEquipe(legs)) return;
-      const probaCombinee = legs.reduce((p, l) => p * l.proba, 1);
+      const probaCombineeBrute = legs.reduce((p, l) => p * l.proba, 1);
+      // AJOUT (corrélation résiduelle) — décote conservatrice forfaitaire
+      // par paire de légs même jour + même championnat, voir
+      // nbPairesCorreleesMemeJournee() ci-dessus. Aucun effet sur des légs
+      // isolés (k=1) ni sur des légs de championnats/jours différents.
+      const nbPairesCorrelees = k > 1 ? nbPairesCorreleesMemeJournee(legs) : 0;
+      const probaCombinee = probaCombineeBrute * Math.pow(FACTEUR_DECOTE_CORRELATION_JOURNEE, nbPairesCorrelees);
       if (probaCombinee < probaCombineeMin) return; // trop improbable pour être utile
 
       const coteCombinee = +legs.reduce((c, l) => c * l.cote, 1).toFixed(2);
@@ -1884,6 +2540,7 @@ function genererTickets(suggestions, options = {}) {
         probaCombinee: +(probaCombinee * 100).toFixed(1),
         coteCombinee,
         edgeCombine,
+        correlationDetectee: nbPairesCorrelees > 0,
         categorie: categoriserTicket(probaCombinee),
         // Kelly plus prudent (15% au lieu de 25%) : la variance d'un combiné
         // est bien plus élevée que celle d'une sélection simple.
@@ -1971,18 +2628,53 @@ function reductionEffectifs(matchId, m) {
   };
 }
 
+// AJOUT (COMPOSITIONS — recalage live) — une sortie sur blessure NE réduit PAS
+// l'effectif à 10 (le joueur est remplacé), donc reductionEffectifs()
+// ci-dessus ne la voit jamais : sans ceci, un buteur clé sorti blessé à la
+// 30e minute serait invisible pour le modèle alors que le poste est
+// généralement moins bien couvert par le remplaçant. On relit le journal
+// evenements_live (déjà synchronisé par sync-evenements-live) et on applique
+// le même barème de poids que le module COMPOSITIONS pré-match — à condition
+// que le serveur ait joint poste/poids à l'événement (voir sync-compositions
+// / sync-evenements-live, hors de ce fichier ; si absents, poids=0 et aucun
+// effet, comportement inchangé pour les matchs sans cette donnée).
+function impactBlessuresClesLive(m, equipeCote) {
+  const evenements = Array.isArray(m?.evenements_live) ? m.evenements_live : [];
+  const pertinents = evenements
+    .filter(e => e.type === 'blessure' && e.equipe === equipeCote && Number(e.poids ?? 0) > 0)
+    .map(e => ({ poste: e.poste, poids: e.poids }));
+  return calculerImpactComposition(pertinents);
+}
+
 // Retourne des copies (éventuellement) ajustées de eqDom/eqExt à utiliser
-// pour le calcul live. Le malus est appliqué de façon multiplicative par
-// joueur exclu (un 2e carton rouge dans le même match aggrave donc encore
-// le malus plutôt que de rester plafonné à une seule exclusion). Si aucune
-// exclusion (auto ou manuelle) n'est connue pour ce match, renvoie les
-// objets équipe tels quels (aucune copie inutile).
+// pour le calcul live. Le malus carton rouge est appliqué de façon
+// multiplicative par joueur exclu (un 2e carton rouge dans le même match
+// aggrave donc encore le malus plutôt que de rester plafonné à une seule
+// exclusion) ; le malus blessure clé (voir impactBlessuresClesLive ci-dessus)
+// s'y ajoute indépendamment, sans plafond partagé. Si rien n'est connu pour
+// ce match, renvoie les objets équipe tels quels (aucune copie inutile).
 function equipesAjusteesLive(matchId, eqDom, eqExt, m) {
   const { domicile: redDom, exterieur: redExt } = reductionEffectifs(matchId, m);
-  if (!redDom && !redExt) return { eqDom, eqExt };
+  const blessDom = impactBlessuresClesLive(m, 'domicile');
+  const blessExt = impactBlessuresClesLive(m, 'exterieur');
+  const rienDom = !redDom && !blessDom.malusAttaque && !blessDom.malusDefense;
+  const rienExt = !redExt && !blessExt.malusAttaque && !blessExt.malusDefense;
+  if (rienDom && rienExt) return { eqDom, eqExt };
+  // AJOUT (PUISSANCE-02) — seules les forces du contexte réellement joué dans
+  // CE match comptent pour calculerButsAttendus (attaqueDom/defenseDom pour
+  // l'équipe à domicile, attaqueExt/defenseExt pour l'équipe à l'extérieur) :
+  // pas la peine de toucher l'autre paire, jamais lue pour ce match.
   return {
-    eqDom: redDom ? { ...eqDom, attaque: eqDom.attaque * Math.pow(MALUS_CARTON_ROUGE_ATTAQUE, redDom), defense: eqDom.defense * Math.pow(MALUS_CARTON_ROUGE_DEFENSE, redDom) } : eqDom,
-    eqExt: redExt ? { ...eqExt, attaque: eqExt.attaque * Math.pow(MALUS_CARTON_ROUGE_ATTAQUE, redExt), defense: eqExt.defense * Math.pow(MALUS_CARTON_ROUGE_DEFENSE, redExt) } : eqExt
+    eqDom: rienDom ? eqDom : {
+      ...eqDom,
+      attaqueDom: eqDom.attaqueDom * Math.pow(MALUS_CARTON_ROUGE_ATTAQUE, redDom) * (1 - blessDom.malusAttaque),
+      defenseDom: eqDom.defenseDom * Math.pow(MALUS_CARTON_ROUGE_DEFENSE, redDom) * (1 + blessDom.malusDefense)
+    },
+    eqExt: rienExt ? eqExt : {
+      ...eqExt,
+      attaqueExt: eqExt.attaqueExt * Math.pow(MALUS_CARTON_ROUGE_ATTAQUE, redExt) * (1 - blessExt.malusAttaque),
+      defenseExt: eqExt.defenseExt * Math.pow(MALUS_CARTON_ROUGE_DEFENSE, redExt) * (1 + blessExt.malusDefense)
+    }
   };
 }
 
@@ -2055,10 +2747,187 @@ function equipesAjusteesFatigue(eqDom, eqExt, dateMatchStr, matchIdActuel) {
   const manqueDom = eqDom ? Math.min(MALUS_FATIGUE_PLAFOND, Math.max(0, SEUIL_REPOS_JOURS - (joursDeRepos(eqDom.id, dateMatchStr, matchIdActuel) ?? SEUIL_REPOS_JOURS))) : 0;
   const manqueExt = eqExt ? Math.min(MALUS_FATIGUE_PLAFOND, Math.max(0, SEUIL_REPOS_JOURS - (joursDeRepos(eqExt.id, dateMatchStr, matchIdActuel) ?? SEUIL_REPOS_JOURS))) : 0;
   if (!manqueDom && !manqueExt) return { eqDom, eqExt };
+  // AJOUT (PUISSANCE-02) — mêmes forces splittées que equipesAjusteesLive ci-dessus.
   return {
-    eqDom: manqueDom ? { ...eqDom, attaque: eqDom.attaque * (1 - MALUS_FATIGUE_PAR_JOUR * manqueDom), defense: eqDom.defense * (1 + MALUS_FATIGUE_PAR_JOUR * manqueDom) } : eqDom,
-    eqExt: manqueExt ? { ...eqExt, attaque: eqExt.attaque * (1 - MALUS_FATIGUE_PAR_JOUR * manqueExt), defense: eqExt.defense * (1 + MALUS_FATIGUE_PAR_JOUR * manqueExt) } : eqExt
+    eqDom: manqueDom ? { ...eqDom, attaqueDom: eqDom.attaqueDom * (1 - MALUS_FATIGUE_PAR_JOUR * manqueDom), defenseDom: eqDom.defenseDom * (1 + MALUS_FATIGUE_PAR_JOUR * manqueDom) } : eqDom,
+    eqExt: manqueExt ? { ...eqExt, attaqueExt: eqExt.attaqueExt * (1 - MALUS_FATIGUE_PAR_JOUR * manqueExt), defenseExt: eqExt.defenseExt * (1 + MALUS_FATIGUE_PAR_JOUR * manqueExt) } : eqExt
   };
+}
+
+// ============================================================
+// DÉCROISSANCE TEMPORELLE (AUDIT PUISSANCE — point "aucune décroissance
+// temporelle sur les ratings/attaque-défense entre saisons") — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : un rating Elo ou une force attaque/défense figés restent
+// identiques à la reprise après une longue coupure (trêve estivale, longue
+// blessure, période de compétition suspendue...) alors que la confiance
+// qu'on peut avoir dans une valeur mesurée des mois plus tôt diminue avec le
+// temps. Sans ça, une équipe promue ou revenant de trêve garde exactement le
+// rating figé de sa dernière apparition, aussi ancien soit-il.
+//
+// PRINCIPE RETENU : pas de notion de "saison" explicite en base (pas de
+// colonne saison/date de trêve) — on utilise donc joursDeRepos(), déjà
+// disponible (voir module FATIGUE ci-dessus), comme proxy générique de
+// "temps écoulé sans données fraîches" pour CETTE équipe. Au-delà d'un seuil
+// (coupure longue, largement au-dessus d'un repos normal), on fait régresser
+// rating et attaque/défense vers leur moyenne de référence (1500 / 1.0) par
+// décroissance exponentielle (demi-vie en jours) — pas un reset brutal, une
+// perte de confiance progressive dans la mesure la plus ancienne.
+//
+// IMPORTANT : comme pour la fatigue, cette décroissance est un OVERLAY DE
+// PRÉDICTION recalculé à chaque match (jamais persisté sur eqDom.rating /
+// eqDom.attaqueDom etc. en base) — la "vraie" force mesurée par
+// mettreAJourRatings()/mettreAJourAttaqueDefense() n'est jamais altérée,
+// seule la confiance qu'on lui accorde à l'instant T diminue avec l'écart
+// temporel. Si le prochain match de cette équipe a lieu peu après, la
+// décroissance recalculée sera quasi nulle : rien n'est perdu.
+//
+// ⚠️ sync-matchs (Edge Function, hors de ce fichier) doit répliquer cette
+// même logique pour rester "vérifié identique" au moteur client (point
+// d'audit "Infra" déjà connu — non auditable ici).
+// ============================================================
+const SEUIL_DECROISSANCE_JOURS = 35;   // en dessous, aucune décroissance (repos normal, y compris trêves courtes de championnat)
+const DEMI_VIE_DECROISSANCE_JOURS = 60; // jours au-delà du seuil pour perdre 50% de l'écart à la moyenne
+const RATING_ELO_MOYEN = 1500;
+const FORCE_MOYENNE = 1.0;
+
+// Facteur de rétention (0 à 1) de l'écart à la moyenne, pour un nombre de
+// jours de repos donné. 1 = aucune perte (sous le seuil), tend vers 0 pour
+// une coupure très longue (plusieurs demi-vies).
+function facteurRetentionDecroissance(joursRepos) {
+  if (joursRepos === null || joursRepos <= SEUIL_DECROISSANCE_JOURS) return 1;
+  const joursAuDela = joursRepos - SEUIL_DECROISSANCE_JOURS;
+  return Math.pow(0.5, joursAuDela / DEMI_VIE_DECROISSANCE_JOURS);
+}
+
+// Fait régresser une valeur vers sa moyenne de référence selon le facteur de
+// rétention (facteur=1 → valeur inchangée ; facteur=0 → valeur = moyenne).
+function regresserVersLaMoyenne(valeur, moyenne, facteur) {
+  return moyenne + (valeur - moyenne) * facteur;
+}
+
+// Retourne des copies (éventuellement) décroîtes de eqDom/eqExt selon leur
+// repos respectif avant ce match précis. Même logique de "copie seulement si
+// besoin" que equipesAjusteesFatigue/equipesAjusteesLive : les objets équipe
+// d'origine ne sont jamais mutés.
+function equipesAjusteesDecroissance(eqDom, eqExt, dateMatchStr, matchIdActuel) {
+  const reposDom = eqDom ? joursDeRepos(eqDom.id, dateMatchStr, matchIdActuel) : null;
+  const reposExt = eqExt ? joursDeRepos(eqExt.id, dateMatchStr, matchIdActuel) : null;
+  const facteurDom = facteurRetentionDecroissance(reposDom);
+  const facteurExt = facteurRetentionDecroissance(reposExt);
+  if (facteurDom >= 1 && facteurExt >= 1) return { eqDom, eqExt };
+
+  const decroitreEquipe = (eq, facteur) => facteur >= 1 ? eq : {
+    ...eq,
+    rating: regresserVersLaMoyenne(eq.rating, RATING_ELO_MOYEN, facteur),
+    attaqueDom: regresserVersLaMoyenne(eq.attaqueDom, FORCE_MOYENNE, facteur),
+    defenseDom: regresserVersLaMoyenne(eq.defenseDom, FORCE_MOYENNE, facteur),
+    attaqueExt: regresserVersLaMoyenne(eq.attaqueExt, FORCE_MOYENNE, facteur),
+    defenseExt: regresserVersLaMoyenne(eq.defenseExt, FORCE_MOYENNE, facteur)
+  };
+
+  return {
+    eqDom: eqDom ? decroitreEquipe(eqDom, facteurDom) : eqDom,
+    eqExt: eqExt ? decroitreEquipe(eqExt, facteurExt) : eqExt
+  };
+}
+
+// ============================================================
+// COMPOSITIONS D'ÉQUIPE — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : le modèle ignorait complètement qui joue réellement. Un buteur
+// suspendu ou un gardien titulaire blessé change le rapport de force autant
+// qu'un carton rouge, mais rien ne le captait avant coup d'envoi.
+//
+// DEUX SOURCES, combinées (voir Edge Function "sync-compositions", hors de ce
+// fichier, qui écrit le résultat final dans mekipro_matchs.absences_dom/ext) :
+//   1) MANUELLE — table mekipro_joueurs_cles, maintenue par l'utilisateur
+//      (voir renderEquipes / ajouterJoueurCle ci-dessous) : nom, poste, poids
+//      (0 à 1, "à quel point ce joueur est irremplaçable").
+//   2) AUTOMATIQUE — l'Edge Function croise l'endpoint API-Football
+//      /injuries (blessures/suspensions déclarées) avec l'historique de
+//      titularisations pour estimer un poids même pour un joueur absent de
+//      la liste manuelle (fréquence de départs titulaire récents / total).
+// Les deux sources s'additionnent dans absences_dom/ext (pas de doublon :
+// l'Edge Function déduplique par nom avant d'écrire).
+//
+// Le CLIENT ne fait qu'appliquer le malus à partir de cette liste déjà
+// consolidée — comme pour la fatigue et le direct, aucun recalcul serveur
+// n'est refait ici, et les objets équipe d'origine ne sont jamais mutés.
+// ============================================================
+const POIDS_MALUS_ATTAQUE_PAR_POINT = 0.12;   // -12% attaque par point de poids absent (attaquants/milieux)
+const POIDS_MALUS_DEFENSE_PAR_POINT = 0.15;   // +15% buts encaissés par point de poids absent (défenseurs/gardien)
+const PLAFOND_POIDS_ABSENCES = 2.0;           // au-delà de 2.0 de poids cumulé, pas de sur-malus (évite l'absurde)
+
+// Sépare les absences par ligne (attaque/milieu vs défense/gardien) et
+// plafonne le poids cumulé de chaque ligne avant de calculer le malus.
+function calculerImpactComposition(absences) {
+  if (!Array.isArray(absences) || absences.length === 0) return { malusAttaque: 0, malusDefense: 0 };
+  let poidsOffensif = 0, poidsDefensif = 0;
+  absences.forEach(a => {
+    const poids = Number(a?.poids ?? 0);
+    if (!poids) return;
+    if (a.poste === 'gardien' || a.poste === 'defenseur') poidsDefensif += poids;
+    else poidsOffensif += poids; // milieu/attaquant/inconnu → traité comme perte offensive
+  });
+  poidsOffensif = Math.min(PLAFOND_POIDS_ABSENCES, poidsOffensif);
+  poidsDefensif = Math.min(PLAFOND_POIDS_ABSENCES, poidsDefensif);
+  return {
+    malusAttaque: poidsOffensif * POIDS_MALUS_ATTAQUE_PAR_POINT,
+    malusDefense: poidsDefensif * POIDS_MALUS_DEFENSE_PAR_POINT
+  };
+}
+
+// Retourne des copies (éventuellement) ajustées de eqDom/eqExt selon les
+// absences pré-match connues pour CE match (m.absences_dom / m.absences_ext).
+// Même logique de "copie seulement si besoin" que les autres modules AJOUT.
+function equipesAjusteesComposition(eqDom, eqExt, m) {
+  const absDom = m?.absences_dom;
+  const absExt = m?.absences_ext;
+  const impactDom = calculerImpactComposition(absDom);
+  const impactExt = calculerImpactComposition(absExt);
+  if (!impactDom.malusAttaque && !impactDom.malusDefense && !impactExt.malusAttaque && !impactExt.malusDefense) {
+    return { eqDom, eqExt };
+  }
+  return {
+    eqDom: (impactDom.malusAttaque || impactDom.malusDefense) ? {
+      ...eqDom,
+      attaqueDom: eqDom.attaqueDom * (1 - impactDom.malusAttaque),
+      defenseDom: eqDom.defenseDom * (1 + impactDom.malusDefense)
+    } : eqDom,
+    eqExt: (impactExt.malusAttaque || impactExt.malusDefense) ? {
+      ...eqExt,
+      attaqueExt: eqExt.attaqueExt * (1 - impactExt.malusAttaque),
+      defenseExt: eqExt.defenseExt * (1 + impactExt.malusDefense)
+    } : eqExt
+  };
+}
+
+// Texte affichable signalant une absence connue pour au moins une des deux
+// équipes avant ce match — même esprit que texteReposCourt().
+function texteAbsencesCles(m) {
+  const parties = [];
+  const nommer = (absences, eq) => {
+    if (!Array.isArray(absences) || absences.length === 0 || !eq) return;
+    const noms = absences.filter(a => Number(a?.poids ?? 0) >= 0.3).map(a => a.nom).filter(Boolean);
+    if (noms.length) parties.push(`${escapeHtml(eq.nom)} sans ${noms.map(escapeHtml).join(', ')}`);
+  };
+  nommer(m?.absences_dom, equipesById[m?.equipe_domicile_id]);
+  nommer(m?.absences_ext, equipesById[m?.equipe_exterieur_id]);
+  return parties.length ? `🩹 Absences clés : ${parties.join(' · ')}` : '';
+}
+
+// Composition décroissance (long terme) + fatigue (court terme) + absences de
+// joueurs clés en un seul appel — remplace les usages isolés de
+// equipesAjusteesFatigue() partout où le calendrier ET l'effectif disponible
+// d'une équipe doivent influencer la prédiction. Le paramètre m est optionnel
+// (rétrocompatible avec les appels existants qui n'ont pas encore été mis à
+// jour) : sans lui, aucun malus de composition n'est appliqué, comme avant.
+function equipesAjusteesCalendrier(eqDom, eqExt, dateMatchStr, matchIdActuel, m = null) {
+  const decroitTemp = equipesAjusteesDecroissance(eqDom, eqExt, dateMatchStr, matchIdActuel);
+  const fatigue = equipesAjusteesFatigue(decroitTemp.eqDom, decroitTemp.eqExt, dateMatchStr, matchIdActuel);
+  if (!m) return fatigue;
+  return equipesAjusteesComposition(fatigue.eqDom, fatigue.eqExt, m);
 }
 
 // Texte affichable signalant un repos court (sous SEUIL_REPOS_JOURS) pour au
@@ -2125,27 +2994,26 @@ function genererSuggestionsLive(matchs, equipesById, marge = 0.06) {
     const matchsJoues = Math.min(eqDom.matchs_joues || 10, eqExt.matchs_joues || 10);
 
     const candidats = [
-      { choix: '1', proba: probas.domicile, cote: cotes.domicile },
-      { choix: 'N', proba: probas.nul, cote: cotes.nul },
-      { choix: '2', proba: probas.exterieur, cote: cotes.exterieur },
-      { choix: 'Double Chance 1X', proba: probas.doubleChance1X, cote: cotes.doubleChance1X },
-      { choix: 'Double Chance X2', proba: probas.doubleChanceX2, cote: cotes.doubleChanceX2 },
-      { choix: 'Double Chance 12', proba: probas.doubleChance12, cote: cotes.doubleChance12 },
-      { choix: 'Plus 1.5', proba: probas.plus15, cote: cotes.plus15 },
-      { choix: 'Moins 1.5', proba: probas.moins15, cote: cotes.moins15 },
-      { choix: 'Plus 2.5', proba: probas.plus25, cote: cotes.plus25 },
-      { choix: 'Moins 2.5', proba: probas.moins25, cote: cotes.moins25 },
-      { choix: 'BTTS', proba: probas.btts, cote: cotes.btts },
-      { choix: 'Sans BTTS', proba: probas.sansBtts, cote: cotes.sansBtts }
+      { choix: '1', proba: probas.domicile, cote: cotes.domicile, cle: 'domicile' },
+      { choix: 'N', proba: probas.nul, cote: cotes.nul, cle: 'nul' },
+      { choix: '2', proba: probas.exterieur, cote: cotes.exterieur, cle: 'exterieur' },
+      { choix: 'Double Chance 1X', proba: probas.doubleChance1X, cote: cotes.doubleChance1X, cle: 'doubleChance1X' },
+      { choix: 'Double Chance X2', proba: probas.doubleChanceX2, cote: cotes.doubleChanceX2, cle: 'doubleChanceX2' },
+      { choix: 'Double Chance 12', proba: probas.doubleChance12, cote: cotes.doubleChance12, cle: 'doubleChance12' },
+      { choix: 'Plus 1.5', proba: probas.plus15, cote: cotes.plus15, cle: 'plus15' },
+      { choix: 'Moins 1.5', proba: probas.moins15, cote: cotes.moins15, cle: 'moins15' },
+      { choix: 'Plus 2.5', proba: probas.plus25, cote: cotes.plus25, cle: 'plus25' },
+      { choix: 'Moins 2.5', proba: probas.moins25, cote: cotes.moins25, cle: 'moins25' },
+      { choix: 'BTTS', proba: probas.btts, cote: cotes.btts, cle: 'btts' },
+      { choix: 'Sans BTTS', proba: probas.sansBtts, cote: cotes.sansBtts, cle: 'sansBtts' }
     ];
 
-    let meilleur = null;
-    candidats.forEach(c => {
-      if (!c.cote) return;
-      if (c.proba >= 0.99 || c.proba <= 0.01) return; // marché déjà tranché par le score actuel
-      const edge = calculerEdge(c.proba, c.cote);
-      if (!meilleur || edge > meilleur.edge) meilleur = { ...c, edge };
-    });
+    // Marché déjà tranché par le score actuel : exclu AVANT le classement
+    // (filtre spécifique au direct, voir commentaire genererSuggestionsLive
+    // ci-dessus), puis classement par edge informationnel dévigé (voir
+    // selectionnerMeilleurCandidat()).
+    const candidatsEligibles = candidats.filter(c => !(c.proba >= 0.99 || c.proba <= 0.01));
+    const meilleur = selectionnerMeilleurCandidat(candidatsEligibles, cotes);
 
     if (meilleur && meilleur.edge > 0) {
       let confiance = niveauConfiance(meilleur.edge, matchsJoues);
@@ -2246,12 +3114,12 @@ function genererTicketsLive(suggestionsLive, options = {}) {
 // attaque/defense : multiplicateurs autour de 1.0 (1.3 = attaque 30% au-dessus de la moyenne du championnat)
 // forme : historique des 8 derniers résultats, du plus ancien au plus récent (1=victoire, 0.5=nul, 0=défaite)
 const demoEquipes = [
-  { id: 'e1', nom: 'ASEC Mimosas',    rating: 1620, attaque: 1.35, defense: 0.80, matchs_joues: 14, forme: [1,1,0.5,1,1,0,1,1] },
-  { id: 'e2', nom: 'Africa Sports',   rating: 1540, attaque: 1.10, defense: 0.95, matchs_joues: 13, forme: [0.5,1,0,1,0.5,1,0,1] },
-  { id: 'e3', nom: 'Stade d\'Abidjan',rating: 1480, attaque: 0.90, defense: 1.10, matchs_joues: 12, forme: [0,0.5,0,1,0,0.5,0,0] },
-  { id: 'e4', nom: 'SOA',             rating: 1510, attaque: 1.00, defense: 1.00, matchs_joues: 6,  forme: [1,0,0.5] },
-  { id: 'e5', nom: 'San Pedro FC',    rating: 1450, attaque: 0.85, defense: 1.15, matchs_joues: 11, forme: [0,0,0.5,0,1,0,0.5,0] },
-  { id: 'e6', nom: 'Bouaké FC',       rating: 1490, attaque: 1.05, defense: 0.90, matchs_joues: 10, forme: [1,0.5,1,0,1,1,0.5,1] }
+  { id: 'e1', nom: 'ASEC Mimosas',    rating: 1620, attaqueDom: 1.35, defenseDom: 0.80, attaqueExt: 1.35, defenseExt: 0.80, matchs_joues: 14, forme: [1,1,0.5,1,1,0,1,1] },
+  { id: 'e2', nom: 'Africa Sports',   rating: 1540, attaqueDom: 1.10, defenseDom: 0.95, attaqueExt: 1.10, defenseExt: 0.95, matchs_joues: 13, forme: [0.5,1,0,1,0.5,1,0,1] },
+  { id: 'e3', nom: 'Stade d\'Abidjan',rating: 1480, attaqueDom: 0.90, defenseDom: 1.10, attaqueExt: 0.90, defenseExt: 1.10, matchs_joues: 12, forme: [0,0.5,0,1,0,0.5,0,0] },
+  { id: 'e4', nom: 'SOA',             rating: 1510, attaqueDom: 1.00, defenseDom: 1.00, attaqueExt: 1.00, defenseExt: 1.00, matchs_joues: 6,  forme: [1,0,0.5] },
+  { id: 'e5', nom: 'San Pedro FC',    rating: 1450, attaqueDom: 0.85, defenseDom: 1.15, attaqueExt: 0.85, defenseExt: 1.15, matchs_joues: 11, forme: [0,0,0.5,0,1,0,0.5,0] },
+  { id: 'e6', nom: 'Bouaké FC',       rating: 1490, attaqueDom: 1.05, defenseDom: 0.90, attaqueExt: 1.05, defenseExt: 0.90, matchs_joues: 10, forme: [1,0.5,1,0,1,1,0.5,1] }
 ];
 const equipesById = Object.fromEntries(demoEquipes.map(e => [e.id, e]));
 
@@ -2289,16 +3157,24 @@ let carnetDemo = MODE_DEMO ? chargerCarnet() : [];
 // les paris d'un autre utilisateur, même en cas d'erreur côté client.
 async function chargerCarnetDepuisSupabase() {
   if (!currentUser || !supabaseClient) return;
-  const { data, error } = await supabaseClient.from('mekipro_carnet').select('*').order('created_at', { ascending: false });
-  if (error) { console.warn('Chargement du carnet échoué :', error.message); return; }
-  carnetDemo.length = 0;
-  (data || []).forEach(c => carnetDemo.push({
-    id: c.id, match_id: c.match_id, choix: c.choix, cote_prise: Number(c.cote_prise), statut: c.statut,
-    nom_domicile: c.nom_domicile, nom_exterieur: c.nom_exterieur, date_match_snapshot: c.date_match_snapshot,
-    cote_cloture: c.cote_cloture != null ? Number(c.cote_cloture) : null, clv: c.clv != null ? Number(c.clv) : null,
-    ticket_id: c.ticket_id, ticket_cote_totale: c.ticket_cote_totale
-  }));
-  renderCarnet();
+  try {
+    const { data, error } = await supabaseClient.from('mekipro_carnet').select('*').order('created_at', { ascending: false });
+    if (error) { console.warn('Chargement du carnet échoué :', error.message); return; }
+    carnetDemo.length = 0;
+    (data || []).forEach(c => carnetDemo.push({
+      id: c.id, match_id: c.match_id, choix: c.choix, cote_prise: Number(c.cote_prise), statut: c.statut,
+      nom_domicile: c.nom_domicile, nom_exterieur: c.nom_exterieur, date_match_snapshot: c.date_match_snapshot,
+      cote_cloture: c.cote_cloture != null ? Number(c.cote_cloture) : null, clv: c.clv != null ? Number(c.clv) : null,
+      ticket_id: c.ticket_id, ticket_cote_totale: c.ticket_cote_totale, bookmaker: c.bookmaker || null
+    }));
+    renderCarnet();
+  } catch (e) {
+    // Appelée en tir-et-oublie depuis onAuthStateChange (pas de await côté
+    // appelant) : sans ce filet, une coupure réseau au login laissait le
+    // carnet vide sans aucun message, l'utilisateur croyant qu'il n'a
+    // aucun pari enregistré alors que le chargement a juste échoué.
+    console.warn('Chargement du carnet échoué (réseau ?) :', e.message);
+  }
 }
 
 // ============================================================
@@ -2318,6 +3194,14 @@ async function chargerCarnetDepuisSupabase() {
 //                 (voir supabase/functions/sync-evenements-live/index.ts) via
 //                 l'endpoint /fixtures/events d'API-Football. Voir migration
 //                 evenements_live.sql.
+//                 ⚠️ xG RÉEL (Understat/FBref) : ajouter aussi xg_reel_domicile
+//                 (numeric, null par défaut) et xg_reel_exterieur (numeric,
+//                 null par défaut) — AUCUN flux automatique connecté (pas
+//                 d'API officielle Understat/FBref), voir mettreAJourAttaqueDefense
+//                 pour la limite exacte. Remplies par saisie manuelle (voir
+//                 importerResultats, format à 6 champs) ou par une future
+//                 Edge Function si tu trouves une source fiable d'xG basé sur
+//                 les tirs.
 //   mekipro_carnet  : ajouter nom_domicile (text), nom_exterieur (text),
 //                 date_match_snapshot (timestamptz) — l'instantané des
 //                 infos du match au moment du pari, et statut peut
@@ -2340,12 +3224,42 @@ async function chargerDonneesSupabase() {
     if (!equipesData || equipesData.length === 0) return false; // table vide → on garde la démo
 
     demoEquipes.length = 0;
-    equipesData.forEach(e => demoEquipes.push({
-      id: e.id, nom: e.nom, rating: Number(e.rating), attaque: Number(e.attaque),
-      defense: Number(e.defense), matchs_joues: e.matchs_joues, forme: e.forme || []
-    }));
+    equipesData.forEach(e => {
+      // AJOUT (PUISSANCE-02) — lit les nouvelles colonnes splittées si la
+      // migration mekipro_equipes (attaque_dom/defense_dom/attaque_ext/
+      // defense_ext) a été appliquée ; sinon replie sur l'ancienne colonne
+      // attaque/defense unique pour les deux contextes (comportement
+      // identique à avant ce changement tant que la migration n'existe pas).
+      const attaqueLegacy = Number(e.attaque ?? 1.0);
+      const defenseLegacy = Number(e.defense ?? 1.0);
+      demoEquipes.push({
+        id: e.id, nom: e.nom, rating: Number(e.rating),
+        attaqueDom: Number(e.attaque_dom ?? attaqueLegacy),
+        defenseDom: Number(e.defense_dom ?? defenseLegacy),
+        attaqueExt: Number(e.attaque_ext ?? attaqueLegacy),
+        defenseExt: Number(e.defense_ext ?? defenseLegacy),
+        matchs_joues: e.matchs_joues, forme: e.forme || []
+      });
+    });
     Object.keys(equipesById).forEach(k => delete equipesById[k]);
     demoEquipes.forEach(e => { equipesById[e.id] = e; });
+
+    // AJOUT (COMPOSITIONS) — liste des joueurs clés par équipe, gérée par
+    // l'utilisateur (voir renderEquipes / ajouterJoueurCle). Non bloquant :
+    // une erreur ici (table absente si migration pas encore appliquée) ne
+    // doit pas empêcher le reste de l'appli de charger.
+    try {
+      const { data: joueursClesData, error: jcErr } = await supabaseClient.from('mekipro_joueurs_cles').select('*').eq('actif', true);
+      joueursClesParEquipe = {};
+      if (!jcErr && joueursClesData) {
+        joueursClesData.forEach(j => {
+          if (!joueursClesParEquipe[j.equipe_id]) joueursClesParEquipe[j.equipe_id] = [];
+          joueursClesParEquipe[j.equipe_id].push({ id: j.id, nom: j.nom, poste: j.poste, poids: Number(j.poids ?? 1) });
+        });
+      }
+    } catch (e) {
+      console.warn("Table mekipro_joueurs_cles indisponible (migration pas encore appliquée ?) :", e.message);
+    }
 
     demoMatchs.length = 0;
     demoMatchsHistoriques.length = 0;
@@ -2359,7 +3273,13 @@ async function chargerDonneesSupabase() {
           // détecté ; evenements_live est le journal affiché dans l'onglet Live (renderEvenementsLiveHTML).
           joueurs_domicile: m.joueurs_domicile ?? 11,
           joueurs_exterieur: m.joueurs_exterieur ?? 11,
-          evenements_live: Array.isArray(m.evenements_live) ? m.evenements_live : []
+          evenements_live: Array.isArray(m.evenements_live) ? m.evenements_live : [],
+          // AJOUT (COMPOSITIONS) — écrit par l'Edge Function "sync-compositions"
+          // (blessures/suspensions API-Football croisées avec mekipro_joueurs_cles
+          // + détection auto par fréquence de titularisation), voir module
+          // COMPOSITIONS D'ÉQUIPE plus bas. Forme : [{nom, poste, poids, source}].
+          absences_dom: Array.isArray(m.absences_dom) ? m.absences_dom : [],
+          absences_ext: Array.isArray(m.absences_ext) ? m.absences_ext : []
         });
       } else {
         demoMatchsHistoriques.push({ id: m.id, equipe_domicile_id: m.equipe_domicile_id, equipe_exterieur_id: m.equipe_exterieur_id, date_match: m.date_match, resultat: m.resultat, score: m.score });
@@ -2372,14 +3292,58 @@ async function chargerDonneesSupabase() {
     // plutôt qu'à chaque synchro générale des données publiques.
     if (currentUser) await chargerCarnetDepuisSupabase();
 
-    // Vraies cotes bookmaker (synchronisées côté serveur, voir sync-matchs).
-    // Un match absent de cette table n'a simplement pas encore de cotes
-    // synchronisées — il ne remontera dans aucune suggestion tant que ça
-    // n'est pas le cas (cf. cotesDepuisReel / genererSuggestions).
+    // Vraies cotes bookmaker (synchronisées côté serveur, voir sync-matchs, ou
+    // importées manuellement, voir importerCotesManuel). Un match absent de
+    // cette table n'a simplement pas encore de cotes — il ne remontera dans
+    // aucune suggestion tant que ça n'est pas le cas (cf. cotesDepuisReel /
+    // genererSuggestions).
+    // CORRECTIF (line shopping) — mekipro_cotes a plusieurs lignes possibles
+    // par match_id (une par bookmaker, plus '__consensus__'/'__meilleures__',
+    // voir sync-matchs). L'ancien code se contentait de GARDER la ligne
+    // '__meilleures__' déjà calculée côté serveur (uniquement à partir des
+    // bookmakers synchronisés par API-Football) sans jamais la comparer aux
+    // imports manuels — un import manuel plus généreux que la synchro était
+    // donc ignoré dès qu'une ligne '__meilleures__' existait. On recalcule
+    // maintenant, marché par marché, le vrai maximum toutes sources
+    // confondues (synchro + manuel), avec attribution du bookmaker gagnant.
+    const CLES_MARCHE_CLIENT = ['domicile', 'nul', 'exterieur', 'double_chance_1x', 'double_chance_x2', 'double_chance_12', 'plus25', 'moins25', 'btts', 'sans_btts'];
     const { data: cotesData, error: cErr } = await supabaseClient.from('mekipro_cotes').select('*');
     cotesReellesParMatch = {};
     if (!cErr && cotesData) {
-      cotesData.forEach(c => { cotesReellesParMatch[c.match_id] = c; });
+      const parMatch = new Map();
+      cotesData.forEach(c => {
+        if (!parMatch.has(c.match_id)) parMatch.set(c.match_id, []);
+        parMatch.get(c.match_id).push(c);
+      });
+      parMatch.forEach((lignes, matchId) => {
+        // '__consensus__' est une moyenne de marché, jamais une cote
+        // réellement jouable : exclue de la compétition pour la meilleure cote.
+        const candidates = lignes.filter(l => l.bookmaker !== '__consensus__');
+        if (candidates.length === 0) {
+          const consensus = lignes.find(l => l.bookmaker === '__consensus__');
+          if (consensus) cotesReellesParMatch[matchId] = consensus;
+          return;
+        }
+        const meilleure = { match_id: matchId, bookmaker: '__meilleures__', meilleures_cotes: {}, updated_at: new Date().toISOString() };
+        CLES_MARCHE_CLIENT.forEach(cle => {
+          let meilleureCote = null, meilleurBk = null;
+          candidates.forEach(l => {
+            const v = l[cle];
+            if (typeof v !== 'number') return;
+            if (meilleureCote === null || v > meilleureCote) {
+              meilleureCote = v;
+              // Si la ligne candidate est déjà une '__meilleures__' (calculée
+              // côté serveur sur les seuls bookmakers synchronisés), on
+              // reprend SON attribution pour ce marché plutôt que le littéral
+              // '__meilleures__' — sinon le nom affiché serait ce token interne.
+              meilleurBk = l.bookmaker === '__meilleures__' ? (l.meilleures_cotes?.[cle] || null) : l.bookmaker;
+            }
+          });
+          meilleure[cle] = meilleureCote;
+          if (meilleurBk) meilleure.meilleures_cotes[cle] = meilleurBk;
+        });
+        cotesReellesParMatch[matchId] = meilleure;
+      });
     }
 
     // Historique des cotes réelles archivées (voir mekipro_cotes_historique) —
@@ -2408,7 +3372,15 @@ async function sauvegarderEquipeSupabase(equipe) {
   if (MODE_DEMO) return;
   try {
     await supabaseClient.from('mekipro_equipes').update({
-      rating: equipe.rating, attaque: equipe.attaque, defense: equipe.defense,
+      rating: equipe.rating,
+      // AJOUT (PUISSANCE-02) — nouvelles colonnes splittées (nécessite la
+      // migration mekipro_equipes, voir commentaire sur calculerButsAttendus).
+      attaque_dom: equipe.attaqueDom, defense_dom: equipe.defenseDom,
+      attaque_ext: equipe.attaqueExt, defense_ext: equipe.defenseExt,
+      // Colonnes legacy conservées (moyenne dom/ext) pour ne rien casser côté
+      // composants pas encore migrés (ex. sync-matchs serveur, hors de ce fichier).
+      attaque: (equipe.attaqueDom + equipe.attaqueExt) / 2,
+      defense: (equipe.defenseDom + equipe.defenseExt) / 2,
       matchs_joues: equipe.matchs_joues, forme: equipe.forme, updated_at: new Date().toISOString()
     }).eq('id', equipe.id);
   } catch (e) { console.warn('Sauvegarde équipe Supabase échouée :', e.message); }
@@ -2445,8 +3417,12 @@ async function ajouterEquipeSupabase(equipe) {
   if (MODE_DEMO) return;
   try {
     await supabaseClient.from('mekipro_equipes').upsert({
-      id: equipe.id, nom: equipe.nom, rating: equipe.rating, attaque: equipe.attaque,
-      defense: equipe.defense, matchs_joues: equipe.matchs_joues, forme: equipe.forme
+      id: equipe.id, nom: equipe.nom, rating: equipe.rating,
+      attaque_dom: equipe.attaqueDom, defense_dom: equipe.defenseDom,
+      attaque_ext: equipe.attaqueExt, defense_ext: equipe.defenseExt,
+      attaque: (equipe.attaqueDom + equipe.attaqueExt) / 2,
+      defense: (equipe.defenseDom + equipe.defenseExt) / 2,
+      matchs_joues: equipe.matchs_joues, forme: equipe.forme
     });
   } catch (e) { console.warn('Création équipe Supabase échouée :', e.message); }
 }
@@ -2469,20 +3445,110 @@ async function ajouterEquipeSupabase(equipe) {
 // historique des cotes telles qu'elles étaient AVANT chaque match déjà joué.
 // Sans cet archivage, un vrai backtest sur cotes réelles est impossible ; ce
 // backtest reste donc indicatif (voir avertissement affiché dans l'UI).
+// ============================================================
+// CALIBRATION GLOBALE (AUDIT PUISSANCE — point "pas de test de calibration
+// global (Brier score / reliability diagram) pour vérifier que '60% de
+// proba' arrive vraiment 60% du temps") — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : le modèle produisait des probabilités 1X2 jamais confrontées à
+// leur fréquence réelle de réalisation. Un edge positif calculé sur une
+// proba mal calibrée (ex. le modèle dit 60% mais la vraie fréquence est de
+// 45%) est un edge illusoire, quelle que soit la qualité du reste du calcul.
+//
+// PRINCIPE RETENU : un point de calibration par ISSUE 1X2 possible et par
+// match (3 points/match : proba domicile vs "domicile gagne ?", proba nul
+// vs "nul ?", proba extérieur vs "extérieur gagne ?"), approche standard
+// "one-vs-rest" pour évaluer la calibration d'un modèle multi-classes.
+// Collecté sur TOUS les matchs résolus du walk-forward, PAS seulement ceux
+// où un pari edge>0 a été identifié — sinon on ne mesurerait la calibration
+// que sur l'échantillon biaisé des paris pris, jamais sur le modèle dans
+// son ensemble.
+//
+// DEUX SORTIES :
+//  1) Brier score multi-classe : moyenne, sur tous les matchs, de la somme
+//     des 3 écarts au carré (proba - résultat réel 0/1). 0 = parfait,
+//     jusqu'à 2 = pire cas (toute la masse sur la mauvaise issue). Une
+//     seule valeur pour trancher "le modèle est-il globalement mieux
+//     calibré qu'avant" (utile pour comparer avant/après un changement de
+//     paramètres, ex. poids Elo/Poisson, rho, décroissance temporelle...).
+//  2) Reliability diagram (par tranches de proba prédite, pas de 10%) :
+//     pour chaque tranche, proba moyenne prédite vs fréquence réelle
+//     observée. Un modèle bien calibré a les deux colonnes proches sur
+//     toutes les tranches ; un écart systématique (ex. "60-70% prédit" mais
+//     "45% réel") signale une surconfiance à recalibrer.
+// ============================================================
+const NB_TRANCHES_CALIBRATION = 10;
+
+function calculerCalibration(points) {
+  if (!points.length) return { brierScore: null, nbMatchs: 0, tranches: [] };
+
+  // Brier score multi-classe = moyenne PAR MATCH (pas par point un-contre-
+  // tous) ; comme chaque match contribue exactement 3 points, diviser la
+  // somme des carrés par (points.length / 3) revient à diviser par le
+  // nombre de matchs.
+  const sommeCarres = points.reduce((s, p) => s + (p.proba - p.survenu) ** 2, 0);
+  const nbMatchs = points.length / 3;
+  const brierScore = +(sommeCarres / nbMatchs).toFixed(4);
+
+  const tranches = Array.from({ length: NB_TRANCHES_CALIBRATION }, (_, i) => ({
+    min: i / NB_TRANCHES_CALIBRATION,
+    max: (i + 1) / NB_TRANCHES_CALIBRATION,
+    n: 0, sommeProba: 0, sommeSurvenu: 0
+  }));
+
+  points.forEach(p => {
+    const idx = Math.min(NB_TRANCHES_CALIBRATION - 1, Math.floor(p.proba * NB_TRANCHES_CALIBRATION));
+    const t = tranches[idx];
+    t.n++;
+    t.sommeProba += p.proba;
+    t.sommeSurvenu += p.survenu;
+  });
+
+  return {
+    brierScore,
+    nbMatchs: Math.round(nbMatchs),
+    tranches: tranches.map(t => ({
+      min: t.min, max: t.max, n: t.n,
+      probaMoyennePredite: t.n ? +(t.sommeProba / t.n * 100).toFixed(1) : null,
+      frequenceReelle: t.n ? +(t.sommeSurvenu / t.n * 100).toFixed(1) : null
+    }))
+  };
+}
+
+// Construit les 3 points de calibration (1/N/2) pour un match donné à
+// partir des probas pré-match et du score réel. Appelé à chaque itération
+// des deux walk-forward (backtester/backtesterCotesReelles), sur TOUS les
+// matchs résolus, indépendamment de tout edge ou cote disponible.
+function pointsCalibrationMatch(probas, butsDom, butsExt) {
+  return [
+    { proba: probas.domicile, survenu: butsDom > butsExt ? 1 : 0 },
+    { proba: probas.nul, survenu: butsDom === butsExt ? 1 : 0 },
+    { proba: probas.exterieur, survenu: butsExt > butsDom ? 1 : 0 }
+  ];
+}
+
 function backtester(matchsHistoriques, equipesById, marge = 0.06) {
-  // Calibrage automatique de rho (Dixon-Coles) sur cet historique AVANT de
-  // lancer le walk-forward de prédiction. Ce calibrage réutilise déjà tout
-  // l'historique une fois pour trouver rho (paramètre global de marché,
-  // pas une force d'équipe) — voir le commentaire dans calibrerRhoDixonColes
-  // pour la justification. Le résultat devient aussi le rho de production
-  // (rhoDixonColesActuel), utilisé par genererSuggestions().
-  const calibrage = calibrerRhoDixonColes(matchsHistoriques);
+  // Calibrage automatique de rho ET du poids de fusion Elo/Poisson (voir
+  // PUISSANCE-01) sur cet historique AVANT de lancer le walk-forward de
+  // prédiction. Les deux résultats deviennent les paramètres de production
+  // (rhoDixonColesActuel / poidsFusionEloActuel), utilisés par
+  // genererSuggestions() et genererPronosticsModele().
+  const calibrage = calibrerParametresModele(matchsHistoriques);
   setRhoDixonColesActuel(calibrage.rho);
+  setPoidsFusionEloActuel(calibrage.poidsElo);
+  // AJOUT (calibration par championnat) — peuple constantesParLigue, relu par
+  // constantesPourLigue() dans le walk-forward qui suit (via calculerProbabilites
+  // et mettreAJourAttaqueDefense, tous deux appelés avec m.ligue ci-dessous).
+  const constantesLigues = calibrerConstantesLigues(matchsHistoriques);
 
   const equipesSimulees = {};
+  // AJOUT (head-to-head) — table LOCALE, reconstruite match par match dans
+  // l'ordre chronologique (voir justification anti-fuite dans le module H2H
+  // plus haut) : jamais le cache global h2hParPaireEquipes ici.
+  const h2hLocal = {};
   const idEquipe = (id, equipesById) => {
     if (!equipesSimulees[id]) {
-      equipesSimulees[id] = { id, nom: equipesById[id]?.nom || id, rating: 1500, attaque: 1.0, defense: 1.0, matchs_joues: 0, forme: [] };
+      equipesSimulees[id] = { id, nom: equipesById[id]?.nom || id, rating: 1500, attaqueDom: 1.0, defenseDom: 1.0, attaqueExt: 1.0, defenseExt: 1.0, matchs_joues: 0, forme: [] };
     }
     return equipesSimulees[id];
   };
@@ -2490,6 +3556,7 @@ function backtester(matchsHistoriques, equipesById, marge = 0.06) {
   const historiqueTrie = [...matchsHistoriques].sort((a, b) => new Date(a.date_match) - new Date(b.date_match));
   let nbParis = 0, nbGagnes = 0, profitFictif = 0, sommeEdge = 0, unitesMisees = 0;
   const detail = [];
+  const pointsCalibration = [];
 
   historiqueTrie.forEach(m => {
     const eqDom = idEquipe(m.equipe_domicile_id, equipesById);
@@ -2505,33 +3572,32 @@ function backtester(matchsHistoriques, equipesById, marge = 0.06) {
     // backtest mesurerait un modèle plus optimiste que celui réellement
     // utilisé en production par genererSuggestions/renderMatchs, faussant
     // à la hausse le taux de réussite mesuré.
-    const { eqDom: eqDomFatigue, eqExt: eqExtFatigue } = equipesAjusteesFatigue(eqDom, eqExt, m.date_match, m.id);
-    const probas = calculerProbabilites(eqDomFatigue, eqExtFatigue, calibrage.rho);
+    const { eqDom: eqDomFatigue, eqExt: eqExtFatigue } = equipesAjusteesCalendrier(eqDom, eqExt, m.date_match, m.id, m);
+    const probas = calculerProbabilites(eqDomFatigue, eqExtFatigue, calibrage.rho, calibrage.poidsElo, m.ligue, statsH2HDepuisTable(h2hLocal, m.equipe_domicile_id, m.equipe_exterieur_id));
+    // AJOUT (calibration) — capturé pour CE match indépendamment de tout
+    // edge/pari : on veut mesurer la calibration du modèle dans son
+    // ensemble, pas seulement sur l'échantillon biaisé des paris pris.
+    pointsCalibration.push(...pointsCalibrationMatch(probas, butsDom, butsExt));
     const cotes = calculerCotesMarche(m.id, probas, marge);
     const candidats = [
-      { choix: '1', proba: probas.domicile, cote: cotes.domicile },
-      { choix: 'N', proba: probas.nul, cote: cotes.nul },
-      { choix: '2', proba: probas.exterieur, cote: cotes.exterieur },
-      { choix: 'Double Chance 1X', proba: probas.doubleChance1X, cote: cotes.doubleChance1X },
-      { choix: 'Double Chance X2', proba: probas.doubleChanceX2, cote: cotes.doubleChanceX2 },
-      { choix: 'Double Chance 12', proba: probas.doubleChance12, cote: cotes.doubleChance12 },
-      { choix: 'Plus 1.5', proba: probas.plus15, cote: cotes.plus15 },
-      { choix: 'Moins 1.5', proba: probas.moins15, cote: cotes.moins15 },
-      { choix: 'Plus 2.5', proba: probas.plus25, cote: cotes.plus25 },
-      { choix: 'Moins 2.5', proba: probas.moins25, cote: cotes.moins25 },
-      { choix: 'Plus 3.5', proba: probas.plus35, cote: cotes.plus35 },
-      { choix: 'Moins 3.5', proba: probas.moins35, cote: cotes.moins35 },
-      { choix: 'BTTS', proba: probas.btts, cote: cotes.btts },
-      { choix: 'Sans BTTS', proba: probas.sansBtts, cote: cotes.sansBtts },
-      { choix: 'Handicap -1 Domicile', proba: probas.handicapDom1, cote: cotes.handicapDom1 },
-      { choix: 'Handicap +1 Extérieur', proba: probas.handicapExt1, cote: cotes.handicapExt1 }
+      { choix: '1', proba: probas.domicile, cote: cotes.domicile, cle: 'domicile' },
+      { choix: 'N', proba: probas.nul, cote: cotes.nul, cle: 'nul' },
+      { choix: '2', proba: probas.exterieur, cote: cotes.exterieur, cle: 'exterieur' },
+      { choix: 'Double Chance 1X', proba: probas.doubleChance1X, cote: cotes.doubleChance1X, cle: 'doubleChance1X' },
+      { choix: 'Double Chance X2', proba: probas.doubleChanceX2, cote: cotes.doubleChanceX2, cle: 'doubleChanceX2' },
+      { choix: 'Double Chance 12', proba: probas.doubleChance12, cote: cotes.doubleChance12, cle: 'doubleChance12' },
+      { choix: 'Plus 1.5', proba: probas.plus15, cote: cotes.plus15, cle: 'plus15' },
+      { choix: 'Moins 1.5', proba: probas.moins15, cote: cotes.moins15, cle: 'moins15' },
+      { choix: 'Plus 2.5', proba: probas.plus25, cote: cotes.plus25, cle: 'plus25' },
+      { choix: 'Moins 2.5', proba: probas.moins25, cote: cotes.moins25, cle: 'moins25' },
+      { choix: 'Plus 3.5', proba: probas.plus35, cote: cotes.plus35, cle: 'plus35' },
+      { choix: 'Moins 3.5', proba: probas.moins35, cote: cotes.moins35, cle: 'moins35' },
+      { choix: 'BTTS', proba: probas.btts, cote: cotes.btts, cle: 'btts' },
+      { choix: 'Sans BTTS', proba: probas.sansBtts, cote: cotes.sansBtts, cle: 'sansBtts' },
+      { choix: 'Handicap -1 Domicile', proba: probas.handicapDom1, cote: cotes.handicapDom1, cle: 'handicapDom1' },
+      { choix: 'Handicap +1 Extérieur', proba: probas.handicapExt1, cote: cotes.handicapExt1, cle: 'handicapExt1' }
     ];
-    let meilleur = null;
-    candidats.forEach(c => {
-      if (!c.cote) return;
-      const edge = calculerEdge(c.proba, c.cote);
-      if (!meilleur || edge > meilleur.edge) meilleur = { ...c, edge };
-    });
+    const meilleur = selectionnerMeilleurCandidat(candidats, cotes);
 
     if (meilleur && meilleur.edge > 0) {
       const mise = tailleMiseKelly(meilleur.proba, meilleur.cote);
@@ -2551,14 +3617,15 @@ function backtester(matchsHistoriques, equipesById, marge = 0.06) {
     const nouveaux = mettreAJourRatings(eqDom, eqExt, m.resultat, ecartButs);
     eqDom.rating = nouveaux.domicile;
     eqExt.rating = nouveaux.exterieur;
-    const nouvellesForces = mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, probas.xg);
-    eqDom.attaque = nouvellesForces.attaqueDom; eqDom.defense = nouvellesForces.defenseDom;
-    eqExt.attaque = nouvellesForces.attaqueExt; eqExt.defense = nouvellesForces.defenseExt;
+    const nouvellesForces = mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, probas.xg, xgReelDepuisMatch(m), constantesPourLigue(m.ligue));
+    eqDom.attaqueDom = nouvellesForces.attaqueDom; eqDom.defenseDom = nouvellesForces.defenseDom;
+    eqExt.attaqueExt = nouvellesForces.attaqueExt; eqExt.defenseExt = nouvellesForces.defenseExt;
     const scoreDom = m.resultat === '1' ? 1 : m.resultat === 'N' ? 0.5 : 0;
     const scoreExt = m.resultat === '2' ? 1 : m.resultat === 'N' ? 0.5 : 0;
     eqDom.forme = [...eqDom.forme, scoreDom].slice(-8);
     eqExt.forme = [...eqExt.forme, scoreExt].slice(-8);
     eqDom.matchs_joues++; eqExt.matchs_joues++;
+    enregistrerH2H(h2hLocal, m.equipe_domicile_id, m.equipe_exterieur_id, m.resultat);
   });
 
   return {
@@ -2568,8 +3635,13 @@ function backtester(matchsHistoriques, equipesById, marge = 0.06) {
     edgeMoyen: nbParis ? +(sommeEdge / nbParis).toFixed(1) : 0,
     profitFictif: +profitFictif.toFixed(1),
     rhoDixonColes: calibrage.rho,
-    rhoCalibre: calibrage.calibre,
-    logVraisemblance: calibrage.logVraisemblance,
+    rhoCalibre: calibrage.rhoCalibre,
+    logVraisemblance: calibrage.logVraisemblanceRho,
+    poidsFusionElo: calibrage.poidsElo,
+    poidsFusionCalibre: calibrage.poidsCalibre,
+    logVraisemblancePoids: calibrage.logVraisemblancePoids,
+    constantesLigues,
+    calibration: calculerCalibration(pointsCalibration),
     detail
   };
 }
@@ -2586,11 +3658,13 @@ function backtester(matchsHistoriques, equipesById, marge = 0.06) {
 // fourni (y compris les matchs sans cote archivée), pour que les matchs
 // suivants bénéficient quand même de l'information de résultat — seul le
 // pari lui-même est sauté quand aucune cote n'est disponible.
-function backtesterCotesReelles(matchsHistoriques, equipesById, rho = rhoDixonColesActuel) {
+function backtesterCotesReelles(matchsHistoriques, equipesById, rho = rhoDixonColesActuel, poidsElo = poidsFusionEloActuel) {
   const equipesSimulees = {};
+  // AJOUT (head-to-head) — voir justification anti-fuite dans backtester() ci-dessus.
+  const h2hLocal = {};
   const idEquipe = (id, equipesById) => {
     if (!equipesSimulees[id]) {
-      equipesSimulees[id] = { id, nom: equipesById[id]?.nom || id, rating: 1500, attaque: 1.0, defense: 1.0, matchs_joues: 0, forme: [] };
+      equipesSimulees[id] = { id, nom: equipesById[id]?.nom || id, rating: 1500, attaqueDom: 1.0, defenseDom: 1.0, attaqueExt: 1.0, defenseExt: 1.0, matchs_joues: 0, forme: [] };
     }
     return equipesSimulees[id];
   };
@@ -2598,6 +3672,7 @@ function backtesterCotesReelles(matchsHistoriques, equipesById, rho = rhoDixonCo
   const historiqueTrie = [...matchsHistoriques].sort((a, b) => new Date(a.date_match) - new Date(b.date_match));
   let nbParis = 0, nbGagnes = 0, profitFictif = 0, sommeEdge = 0, unitesMisees = 0, nbSansCoteArchivee = 0;
   const detail = [];
+  const pointsCalibration = [];
 
   historiqueTrie.forEach(m => {
     const eqDom = idEquipe(m.equipe_domicile_id, equipesById);
@@ -2609,8 +3684,12 @@ function backtesterCotesReelles(matchsHistoriques, equipesById, rho = rhoDixonCo
 
     // Prédiction basée uniquement sur l'état AVANT ce match (identique à backtester())
     // AJOUT — fatigue/calendrier, voir la justification dans backtester() ci-dessus.
-    const { eqDom: eqDomFatigue, eqExt: eqExtFatigue } = equipesAjusteesFatigue(eqDom, eqExt, m.date_match, m.id);
-    const probas = calculerProbabilites(eqDomFatigue, eqExtFatigue, rho);
+    const { eqDom: eqDomFatigue, eqExt: eqExtFatigue } = equipesAjusteesCalendrier(eqDom, eqExt, m.date_match, m.id, m);
+    const probas = calculerProbabilites(eqDomFatigue, eqExtFatigue, rho, poidsElo, m.ligue, statsH2HDepuisTable(h2hLocal, m.equipe_domicile_id, m.equipe_exterieur_id));
+    // AJOUT (calibration) — voir justification dans backtester() ci-dessus ;
+    // capturé même pour les matchs sans cote archivée (nbSansCoteArchivee),
+    // la calibration du modèle ne dépend pas de la disponibilité d'une cote.
+    pointsCalibration.push(...pointsCalibrationMatch(probas, butsDom, butsExt));
     const ligneArchivee = derniereCoteArchiveeAvantMatch(m.id, m.date_match);
     const cotes = cotesDepuisArchive(ligneArchivee);
 
@@ -2618,23 +3697,18 @@ function backtesterCotesReelles(matchsHistoriques, equipesById, rho = rhoDixonCo
       nbSansCoteArchivee++;
     } else {
       const candidats = [
-        { choix: '1', proba: probas.domicile, cote: cotes.domicile },
-        { choix: 'N', proba: probas.nul, cote: cotes.nul },
-        { choix: '2', proba: probas.exterieur, cote: cotes.exterieur },
-        { choix: 'Double Chance 1X', proba: probas.doubleChance1X, cote: cotes.doubleChance1X },
-        { choix: 'Double Chance X2', proba: probas.doubleChanceX2, cote: cotes.doubleChanceX2 },
-        { choix: 'Double Chance 12', proba: probas.doubleChance12, cote: cotes.doubleChance12 },
-        { choix: 'Plus 2.5', proba: probas.plus25, cote: cotes.plus25 },
-        { choix: 'Moins 2.5', proba: probas.moins25, cote: cotes.moins25 },
-        { choix: 'BTTS', proba: probas.btts, cote: cotes.btts },
-        { choix: 'Sans BTTS', proba: probas.sansBtts, cote: cotes.sansBtts }
+        { choix: '1', proba: probas.domicile, cote: cotes.domicile, cle: 'domicile' },
+        { choix: 'N', proba: probas.nul, cote: cotes.nul, cle: 'nul' },
+        { choix: '2', proba: probas.exterieur, cote: cotes.exterieur, cle: 'exterieur' },
+        { choix: 'Double Chance 1X', proba: probas.doubleChance1X, cote: cotes.doubleChance1X, cle: 'doubleChance1X' },
+        { choix: 'Double Chance X2', proba: probas.doubleChanceX2, cote: cotes.doubleChanceX2, cle: 'doubleChanceX2' },
+        { choix: 'Double Chance 12', proba: probas.doubleChance12, cote: cotes.doubleChance12, cle: 'doubleChance12' },
+        { choix: 'Plus 2.5', proba: probas.plus25, cote: cotes.plus25, cle: 'plus25' },
+        { choix: 'Moins 2.5', proba: probas.moins25, cote: cotes.moins25, cle: 'moins25' },
+        { choix: 'BTTS', proba: probas.btts, cote: cotes.btts, cle: 'btts' },
+        { choix: 'Sans BTTS', proba: probas.sansBtts, cote: cotes.sansBtts, cle: 'sansBtts' }
       ];
-      let meilleur = null;
-      candidats.forEach(c => {
-        if (!c.cote) return;
-        const edge = calculerEdge(c.proba, c.cote);
-        if (!meilleur || edge > meilleur.edge) meilleur = { ...c, edge };
-      });
+      const meilleur = selectionnerMeilleurCandidat(candidats, cotes);
 
       if (meilleur && meilleur.edge > 0) {
         const mise = tailleMiseKelly(meilleur.proba, meilleur.cote);
@@ -2653,19 +3727,21 @@ function backtesterCotesReelles(matchsHistoriques, equipesById, rho = rhoDixonCo
     const nouveaux = mettreAJourRatings(eqDom, eqExt, m.resultat, ecartButs);
     eqDom.rating = nouveaux.domicile;
     eqExt.rating = nouveaux.exterieur;
-    const nouvellesForces = mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, probas.xg);
-    eqDom.attaque = nouvellesForces.attaqueDom; eqDom.defense = nouvellesForces.defenseDom;
-    eqExt.attaque = nouvellesForces.attaqueExt; eqExt.defense = nouvellesForces.defenseExt;
+    const nouvellesForces = mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, probas.xg, xgReelDepuisMatch(m), constantesPourLigue(m.ligue));
+    eqDom.attaqueDom = nouvellesForces.attaqueDom; eqDom.defenseDom = nouvellesForces.defenseDom;
+    eqExt.attaqueExt = nouvellesForces.attaqueExt; eqExt.defenseExt = nouvellesForces.defenseExt;
     const scoreDom = m.resultat === '1' ? 1 : m.resultat === 'N' ? 0.5 : 0;
     const scoreExt = m.resultat === '2' ? 1 : m.resultat === 'N' ? 0.5 : 0;
     eqDom.forme = [...eqDom.forme, scoreDom].slice(-8);
     eqExt.forme = [...eqExt.forme, scoreExt].slice(-8);
     eqDom.matchs_joues++; eqExt.matchs_joues++;
+    enregistrerH2H(h2hLocal, m.equipe_domicile_id, m.equipe_exterieur_id, m.resultat);
   });
 
   return {
     nbParis, nbGagnes, nbSansCoteArchivee,
     nbMatchsEligibles: historiqueTrie.filter(m => m.resultat).length - nbSansCoteArchivee,
+    calibration: calculerCalibration(pointsCalibration),
     tauxReussite: nbParis ? +(nbGagnes / nbParis * 100).toFixed(1) : 0,
     roiFictif: unitesMisees ? +(profitFictif / unitesMisees * 100).toFixed(1) : 0,
     edgeMoyen: nbParis ? +(sommeEdge / nbParis).toFixed(1) : 0,
@@ -2738,9 +3814,27 @@ function htmlChargerPlus(cle, total, affiches) {
   `;
 }
 
+// AJOUT (PUISSANCE-01) — CORRECTIF ORDONNANCEMENT : rho et le poids de fusion
+// Elo/Poisson étaient calibrés uniquement à l'intérieur de backtester(),
+// qui n'est appelé (via renderBacktest) qu'APRÈS renderPronostics()/
+// renderSuggestions() dans la chaîne de rendu (voir initialiser() et
+// synchroniserAutomatiquement()) : le calibrage arrivait donc systématiquement
+// un cycle de rendu trop tard, exactement le même défaut que le commentaire
+// sur calculerFacteurRecalibrageCLV() décrit déjà plus haut pour le CLV.
+// On calibre ici, explicitement, AVANT toute génération de pronostic/suggestion
+// de ce cycle — backtester() refait le même calcul juste après (déterministe,
+// coût négligeable sur ce volume de matchs) pour rester utilisable seul.
+function calibrerEtAppliquerParametresModele() {
+  const calibrage = calibrerParametresModele(demoMatchsHistoriques);
+  setRhoDixonColesActuel(calibrage.rho);
+  setPoidsFusionEloActuel(calibrage.poidsElo);
+  return calibrage;
+}
+
 // Rendu de l'onglet "Pronostics" — pur, sans cote, toujours peuplé dès que
 // des matchs à venir et des équipes sont chargés (démo ou Supabase).
 function renderPronostics() {
+  calibrerEtAppliquerParametresModele();
   const pronostics = genererPronosticsModele(demoMatchs.filter(m => m.statut === 'a_venir'), equipesById);
   const list = document.getElementById('pronosticsList');
   document.getElementById('statPronostics').textContent = pronostics.length;
@@ -2843,7 +3937,7 @@ function renderSuggestions() {
 // impossible, ex. proba = 0) ne doit jamais produire un bouton cliquable
 // cassé (onclick avec "null" dedans, ou une valeur affichée "null"/"NaN").
 // On retombe alors sur un bouton visuellement désactivé, non cliquable.
-function renderOddBtn(matchId, choix, cote, label) {
+function renderOddBtn(matchId, choix, cote, label, bookmaker) {
   const coteValide = typeof cote === 'number' && isFinite(cote) && cote > 1;
   if (!coteValide) {
     return `
@@ -2853,10 +3947,15 @@ function renderOddBtn(matchId, choix, cote, label) {
       </div>
     `;
   }
+  // AJOUT (line shopping) — indique chez quel bookmaker cette cote (la
+  // meilleure disponible tous bookmakers confondus, voir attributionBookmakerParMatch)
+  // a été trouvée, pour que le pari soit réellement jouable à ce prix.
+  const etiquette = bookmaker ? `<div class="meta" style="font-size:11px; margin-top:2px;">chez ${escapeHtml(bookmaker)}</div>` : '';
   return `
-    <div class="odd-btn" data-action="add-carnet" data-match-id="${escapeAttr(matchId)}" data-choix="${escapeAttr(choix)}" data-cote="${cote}">
+    <div class="odd-btn" data-action="add-carnet" data-match-id="${escapeAttr(matchId)}" data-choix="${escapeAttr(choix)}" data-cote="${cote}" data-bookmaker="${escapeAttr(bookmaker || '')}">
       <div class="label">${label}</div>
       <div class="value-num">${cote}</div>
+      ${etiquette}
     </div>
   `;
 }
@@ -2865,36 +3964,39 @@ function renderOddBtn(matchId, choix, cote, label) {
 // à partir d'un jeu de cotes. Partagé entre l'affichage pré-match et live
 // pour que les deux moteurs restent strictement synchronisés côté rendu.
 function renderMarketsHTML(matchId, eqDom, eqExt, cotes) {
+  // AJOUT (line shopping) — {} si le match n'a pas de vraies cotes (démo,
+  // live simulé) : renderOddBtn n'affiche alors simplement pas d'étiquette.
+  const attrib = attributionBookmakerParMatch(matchId);
   return `
     <div class="market-label">1X2</div>
     <div class="odds-row">
-      ${renderOddBtn(matchId, '1', cotes.domicile, `1 · ${escapeHtml(eqDom.nom)}`)}
-      ${renderOddBtn(matchId, 'N', cotes.nul, 'Nul')}
-      ${renderOddBtn(matchId, '2', cotes.exterieur, `2 · ${escapeHtml(eqExt.nom)}`)}
+      ${renderOddBtn(matchId, '1', cotes.domicile, `1 · ${escapeHtml(eqDom.nom)}`, attrib['1'])}
+      ${renderOddBtn(matchId, 'N', cotes.nul, 'Nul', attrib['N'])}
+      ${renderOddBtn(matchId, '2', cotes.exterieur, `2 · ${escapeHtml(eqExt.nom)}`, attrib['2'])}
     </div>
 
     <div class="market-label">Double Chance</div>
     <div class="odds-row">
-      ${renderOddBtn(matchId, 'Double Chance 1X', cotes.doubleChance1X, '1X')}
-      ${renderOddBtn(matchId, 'Double Chance 12', cotes.doubleChance12, '12')}
-      ${renderOddBtn(matchId, 'Double Chance X2', cotes.doubleChanceX2, 'X2')}
+      ${renderOddBtn(matchId, 'Double Chance 1X', cotes.doubleChance1X, '1X', attrib['Double Chance 1X'])}
+      ${renderOddBtn(matchId, 'Double Chance 12', cotes.doubleChance12, '12', attrib['Double Chance 12'])}
+      ${renderOddBtn(matchId, 'Double Chance X2', cotes.doubleChanceX2, 'X2', attrib['Double Chance X2'])}
     </div>
 
     <div class="market-label">Total de buts</div>
     <div class="odds-row">
       ${renderOddBtn(matchId, 'Plus 1.5', cotes.plus15, 'Plus 1.5')}
-      ${renderOddBtn(matchId, 'Plus 2.5', cotes.plus25, 'Plus 2.5')}
+      ${renderOddBtn(matchId, 'Plus 2.5', cotes.plus25, 'Plus 2.5', attrib['Plus 2.5'])}
       ${renderOddBtn(matchId, 'Plus 3.5', cotes.plus35, 'Plus 3.5')}
     </div>
     <div class="odds-row">
       ${renderOddBtn(matchId, 'Moins 1.5', cotes.moins15, 'Moins 1.5')}
-      ${renderOddBtn(matchId, 'Moins 2.5', cotes.moins25, 'Moins 2.5')}
+      ${renderOddBtn(matchId, 'Moins 2.5', cotes.moins25, 'Moins 2.5', attrib['Moins 2.5'])}
       ${renderOddBtn(matchId, 'Moins 3.5', cotes.moins35, 'Moins 3.5')}
     </div>
 
     <div class="market-label">Autres marchés</div>
     <div class="odds-row">
-      ${renderOddBtn(matchId, 'BTTS', cotes.btts, 'Les 2 marquent')}
+      ${renderOddBtn(matchId, 'BTTS', cotes.btts, 'Les 2 marquent', attrib['BTTS'])}
       ${renderOddBtn(matchId, 'Handicap -1 Domicile', cotes.handicapDom1, `Hcp -1 ${escapeHtml(eqDom.nom)}`)}
       ${renderOddBtn(matchId, 'Handicap +1 Extérieur', cotes.handicapExt1, `Hcp +1 ${escapeHtml(eqExt.nom)}`)}
     </div>
@@ -2932,6 +4034,8 @@ function renderControlesCartonRouge(matchId, eqDom, eqExt, m) {
 }
 
 function renderMatchs() {
+  // AJOUT (head-to-head) — voir justification dans genererSuggestions() ci-dessus.
+  construireH2H(demoMatchsHistoriques);
   const list = document.getElementById('matchsList');
   // AJOUT (PERF-02) — même logique de pagination que renderSuggestions.
   const afficheesMatchs = nombreAffiche('matchs');
@@ -2964,18 +4068,20 @@ function renderMatchs() {
     // (voir equipesAjusteesFatigue), pour que l'edge affiché ici et celui des
     // suggestions restent cohérents pour un même match. eqDom/eqExt bruts sont
     // conservés pour l'affichage (nom d'équipe, boutons carton rouge, etc.).
-    const { eqDom: eqDomFatigue, eqExt: eqExtFatigue } = equipesAjusteesFatigue(eqDom, eqExt, m.date_match, m.id);
-    const probas = calculerProbabilites(eqDomFatigue, eqExtFatigue);
+    const { eqDom: eqDomFatigue, eqExt: eqExtFatigue } = equipesAjusteesCalendrier(eqDom, eqExt, m.date_match, m.id, m);
+    const probas = calculerProbabilites(eqDomFatigue, eqExtFatigue, rhoDixonColesActuel, poidsFusionEloActuel, m.ligue, statsH2H(m.equipe_domicile_id, m.equipe_exterieur_id));
     const cotesReelles = MODE_DEMO ? null : cotesDepuisReel(m.id);
     const cotes = MODE_DEMO ? calculerCotesMarche(m.id, probas) : (cotesReelles || cotesVide());
     const infoBookmaker = cotesReellesParMatch[m.id]?.bookmaker;
+    const labelSourceCotes = infoBookmaker === '__meilleures__' ? 'meilleures cotes disponibles' : (infoBookmaker === '__consensus__' ? 'moyenne marché' : (infoBookmaker || 'marché'));
 
     return `
       <div class="card">
         <div class="teams">${escapeHtml(eqDom.nom)} vs ${escapeHtml(eqExt.nom)}</div>
         <div class="meta">${formatDate(m.date_match)} · xG estimés ${probas.xg.domicile.toFixed(2)} - ${probas.xg.exterieur.toFixed(2)} · Score probable : ${probas.meilleurScore.score} (${Math.round(probas.meilleurScore.proba * 100)}%)${m.ligue ? ' · ' + escapeHtml(m.ligue) : ''}</div>
         ${(() => { const t = texteReposCourt(eqDom, eqExt, m.date_match, m.id); return t ? `<div class="meta">${t}</div>` : ''; })()}
-        ${!MODE_DEMO ? (cotesReelles ? `<div class="meta">Cotes : ${escapeHtml(infoBookmaker || 'marché')}</div>` : '<div class="meta">Cotes en attente de synchronisation (pas encore publiées par les bookmakers ou match trop éloigné).</div>') : ''}
+        ${(() => { const t = texteAbsencesCles(m); return t ? `<div class="meta">${t}</div>` : ''; })()}
+        ${!MODE_DEMO ? (cotesReelles ? `<div class="meta">Cotes : ${escapeHtml(labelSourceCotes)}</div>` : '<div class="meta">Cotes en attente de synchronisation (pas encore publiées par les bookmakers ou match trop éloigné).</div>') : ''}
         ${renderMarketsHTML(m.id, eqDom, eqExt, cotes)}
       </div>
     `;
@@ -2998,6 +4104,49 @@ function statutTicket(legs) {
   return 'en_attente';
 }
 
+// ============================================================
+// CLASSEMENT DES BOOKMAKERS PAR TAUX DE RÉUSSITE — AJOUT (line shopping,
+// suite). Ne remplace JAMAIS le choix de la meilleure cote objective
+// (toujours celle avec la valeur la plus haute, voir
+// attributionBookmakerParMatch) : sert uniquement d'indicateur informatif —
+// utile pour départager deux bookmakers à cote identique, ou repérer un
+// bookmaker dont les paris gagnent nettement moins souvent que les autres.
+// Basé uniquement sur TES paris résolus (mekipro_carnet, RLS par
+// utilisateur) — jamais de données d'autres utilisateurs, et jamais sur les
+// paris encore 'en_attente' (résultat pas encore connu) ou 'annule'.
+// ============================================================
+const NB_PARIS_MIN_POUR_CLASSEMENT = 5; // sous ce seuil, échantillon trop petit pour être fiable — affiché quand même mais annoté
+
+function calculerClassementBookmakers() {
+  const parBookmaker = {};
+  carnetDemo.forEach(c => {
+    if (c.statut !== 'gagne' && c.statut !== 'perdu') return;
+    const nom = c.bookmaker || 'Non renseigné';
+    if (!parBookmaker[nom]) parBookmaker[nom] = { gagnes: 0, total: 0 };
+    parBookmaker[nom].total++;
+    if (c.statut === 'gagne') parBookmaker[nom].gagnes++;
+  });
+  return Object.entries(parBookmaker)
+    .map(([nom, s]) => ({ nom, gagnes: s.gagnes, total: s.total, tauxReussite: s.gagnes / s.total }))
+    .sort((a, b) => b.tauxReussite - a.tauxReussite || b.total - a.total);
+}
+
+function renderClassementBookmakers() {
+  const classement = calculerClassementBookmakers();
+  if (classement.length === 0) return '';
+  return `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="section-title" style="margin-top:0;">Bookmakers — taux de réussite</div>
+      ${classement.map(b => `
+        <div class="match-row" style="padding:4px 0;">
+          <div class="teams" style="font-size:14px;">${escapeHtml(b.nom)}${b.total < NB_PARIS_MIN_POUR_CLASSEMENT ? ' <span class="meta">(échantillon faible)</span>' : ''}</div>
+          <div style="font-weight:700; color:${b.tauxReussite >= 0.5 ? '#a8d02e' : '#e2725b'};">${(b.tauxReussite * 100).toFixed(0)}% <span class="meta" style="font-weight:400;">(${b.gagnes}/${b.total})</span></div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
 function renderCarnet() {
   const list = document.getElementById('carnetList');
   // AJOUT (SEC-01) — en mode Supabase, le carnet est propre à un compte ;
@@ -3014,6 +4163,7 @@ function renderCarnet() {
     list.innerHTML = '<div class="empty-state">Ton carnet est vide. Ajoute des paris depuis les suggestions ou le calendrier.</div>';
     return;
   }
+  const classementHTML = renderClassementBookmakers();
 
   // Regroupe les entrées partageant un ticket_id (ajoutées ensemble depuis un
   // ticket combiné, voir ajouterTicketAuCarnet) sans casser l'affichage des
@@ -3041,7 +4191,7 @@ function renderCarnet() {
     }
   });
 
-  list.innerHTML = blocs.map(bloc => {
+  list.innerHTML = classementHTML + blocs.map(bloc => {
     const rendreLigne = c => {
       const m = demoMatchs.find(mm => mm.id === c.match_id);
       const nomDom = c.nom_domicile || (m ? nomEquipe(m.equipe_domicile_id) : 'Équipe A');
@@ -3089,6 +4239,36 @@ function renderCarnet() {
   }).join('');
 }
 
+// AJOUT (COMPOSITIONS) — bloc "joueurs clés" pour une équipe : liste actuelle
+// (avec suppression) + mini-formulaire d'ajout. Le poids (0 à 1) reflète à
+// quel point ce joueur est irremplaçable — voir calculerImpactComposition().
+function renderJoueursClesHTML(equipeId) {
+  const joueurs = joueursClesParEquipe[equipeId] || [];
+  const lignes = joueurs.map(j => `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px; font-size:12px; color:#b8b8b0;">
+      <span>${escapeHtml(j.nom)} · ${escapeHtml(j.poste)} · poids ${j.poids}</span>
+      <button onclick="supprimerJoueurCle('${j.id}')" style="background:none; border:none; color:#f0776f; cursor:pointer; font-size:14px;">✕</button>
+    </div>
+  `).join('');
+  return `
+    <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
+      <div class="meta">Joueurs clés (absence détectée automatiquement via API-Football) :</div>
+      ${lignes || '<div class="meta" style="opacity:0.6;">Aucun déclaré</div>'}
+      <div style="display:flex; gap:4px; margin-top:6px; flex-wrap:wrap;">
+        <input id="jcNom-${equipeId}" placeholder="Nom du joueur" style="flex:2; min-width:100px;">
+        <select id="jcPoste-${equipeId}" style="flex:1; min-width:70px;">
+          <option value="attaquant">Attaquant</option>
+          <option value="milieu">Milieu</option>
+          <option value="defenseur">Défenseur</option>
+          <option value="gardien">Gardien</option>
+        </select>
+        <input id="jcPoids-${equipeId}" type="number" step="0.1" min="0" max="1" value="0.7" style="width:56px;" title="Poids (0 à 1)">
+        <button onclick="ajouterJoueurCle('${equipeId}')">Ajouter</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderEquipes() {
   const list = document.getElementById('equipesList');
   const sorted = [...demoEquipes].sort((a, b) => b.rating - a.rating);
@@ -3099,11 +4279,103 @@ function renderEquipes() {
         <div style="font-size:16px; font-weight:700; color:#a8d02e;">${e.rating}</div>
       </div>
       <div class="meta" style="margin-top:8px;">
-        Attaque ${(e.attaque * 100).toFixed(0)}% · Défense ${e.defense < 1 ? 'solide' : 'fragile'} (${(e.defense * 100).toFixed(0)}%)
+        Domicile — Attaque ${(e.attaqueDom * 100).toFixed(0)}% · Défense ${e.defenseDom < 1 ? 'solide' : 'fragile'} (${(e.defenseDom * 100).toFixed(0)}%)<br>
+        Extérieur — Attaque ${(e.attaqueExt * 100).toFixed(0)}% · Défense ${e.defenseExt < 1 ? 'solide' : 'fragile'} (${(e.defenseExt * 100).toFixed(0)}%)
         · Forme récente ${Math.round(formePonderee(e.forme) * 100)}% · ${e.matchs_joues} matchs joués
       </div>
+      ${renderJoueursClesHTML(e.id)}
     </div>
   `).join('');
+}
+
+// Ajoute un joueur clé pour une équipe (table mekipro_joueurs_cles) et
+// rafraîchit la liste locale + l'affichage. Pas de vérification de doublon
+// stricte : ajouter deux fois le même nom crée deux lignes distinctes — sans
+// gravité (le poids s'additionne simplement), mais à éviter côté saisie.
+async function ajouterJoueurCle(equipeId) {
+  const inputNom = document.getElementById(`jcNom-${equipeId}`);
+  const inputPoste = document.getElementById(`jcPoste-${equipeId}`);
+  const inputPoids = document.getElementById(`jcPoids-${equipeId}`);
+  const nom = (inputNom?.value || '').trim();
+  if (!nom) { inputNom?.focus(); return; }
+  const poste = inputPoste?.value || 'attaquant';
+  const poids = Math.max(0, Math.min(1, Number(inputPoids?.value ?? 0.7) || 0.7));
+  if (MODE_DEMO) {
+    if (!joueursClesParEquipe[equipeId]) joueursClesParEquipe[equipeId] = [];
+    joueursClesParEquipe[equipeId].push({ id: 'demo-' + Date.now(), nom, poste, poids });
+    renderEquipes();
+    return;
+  }
+  try {
+    const { data, error } = await supabaseClient.from('mekipro_joueurs_cles')
+      .insert({ equipe_id: equipeId, nom, poste, poids, actif: true })
+      .select().single();
+    if (error) throw error;
+    if (!joueursClesParEquipe[equipeId]) joueursClesParEquipe[equipeId] = [];
+    joueursClesParEquipe[equipeId].push({ id: data.id, nom: data.nom, poste: data.poste, poids: Number(data.poids) });
+    renderEquipes();
+  } catch (e) {
+    alert("Impossible d'ajouter ce joueur clé : " + e.message);
+  }
+}
+
+// Supprime un joueur clé (soft delete via actif=false pour garder l'historique
+// côté serveur) et le retire de l'affichage local.
+async function supprimerJoueurCle(joueurId) {
+  Object.keys(joueursClesParEquipe).forEach(eqId => {
+    joueursClesParEquipe[eqId] = joueursClesParEquipe[eqId].filter(j => j.id !== joueurId);
+  });
+  renderEquipes();
+  if (MODE_DEMO || String(joueurId).startsWith('demo-')) return;
+  try {
+    const { error } = await supabaseClient.from('mekipro_joueurs_cles').update({ actif: false }).eq('id', joueurId);
+    if (error) throw error;
+  } catch (e) {
+    console.warn('Erreur suppression joueur clé (déjà retiré localement) :', e.message);
+  }
+}
+
+// Rendu commun du bloc calibration (Brier score + reliability diagram) pour
+// les deux backtests (marché simulé et cotes réelles) — voir calculerCalibration()
+// et pointsCalibrationMatch() plus haut pour le détail du calcul.
+function renderCalibrationHTML(calibration) {
+  if (!calibration || !calibration.nbMatchs) {
+    return '<div class="empty-state">Pas assez de matchs résolus pour évaluer la calibration.</div>';
+  }
+  const brierCouleur = calibration.brierScore <= 0.20 ? '#a8d02e' : calibration.brierScore <= 0.35 ? '#e0c568' : '#f87171';
+  const lignesTranches = calibration.tranches
+    .filter(t => t.n > 0)
+    .map(t => {
+      const ecart = Math.abs(t.probaMoyennePredite - t.frequenceReelle);
+      const ecartCouleur = ecart <= 8 ? '#a8d02e' : ecart <= 18 ? '#e0c568' : '#f87171';
+      return `
+        <div style="margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; font-size:11px; color:#b8b8b0; margin-bottom:3px;">
+            <span>${Math.round(t.min * 100)}–${Math.round(t.max * 100)}% prédit (n=${t.n})</span>
+            <span style="color:${ecartCouleur};">prédit ${t.probaMoyennePredite}% · réel ${t.frequenceReelle}%</span>
+          </div>
+          <div style="position:relative; height:8px; background:rgba(255,255,255,0.08); border-radius:4px; overflow:hidden;">
+            <div style="position:absolute; left:0; top:0; height:100%; width:${t.probaMoyennePredite}%; background:rgba(184,216,255,0.35); border-radius:4px;"></div>
+            <div style="position:absolute; left:0; top:0; height:100%; width:${t.frequenceReelle}%; border-right:2px solid ${ecartCouleur}; border-radius:4px;"></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+  return `
+    <div class="stat-grid">
+      <div class="stat-box"><div class="num" style="color:${brierCouleur}">${calibration.brierScore}</div><div class="lbl">Brier score (0 = parfait, 2 = pire cas)</div></div>
+      <div class="stat-box"><div class="num">${calibration.nbMatchs}</div><div class="lbl">Matchs évalués (3 issues/match)</div></div>
+    </div>
+    <div class="card" style="font-size:12px; color:#b8b8b0; margin-top:8px;">
+      Chaque tranche compare la probabilité MOYENNE prédite par le modèle (barre claire) à la fréquence RÉELLE observée
+      (repère de couleur) pour les issues 1X2 tombées dans cette tranche. Si les deux valeurs collent sur toutes les
+      tranches, le modèle est bien calibré ("60% de proba" arrive vraiment ~60% du temps). Un écart systématique dans
+      un sens signale une sur- ou sous-confiance à corriger. ⚠️ Tranches avec peu de matchs (n petit) : lecture peu
+      fiable, à ignorer tant que l'échantillon ne grossit pas.
+    </div>
+    <div class="card" style="margin-top:8px;">${lignesTranches || '<span style="font-size:12px;color:#b8b8b0;">Aucune tranche peuplée.</span>'}</div>
+  `;
 }
 
 function renderBacktest() {
@@ -3124,8 +4396,18 @@ function renderBacktest() {
       Ratings et attaque/défense recalculés depuis un état neutre, match par match dans l'ordre chronologique, pour éviter que le modèle "connaisse" le futur.
       Correction Dixon-Coles : rho = ${resultat.rhoDixonColes}
       ${resultat.rhoCalibre ? `(calibré par maximum de vraisemblance sur ces ${resultat.detail.length ? demoMatchsHistoriques.filter(m=>m.resultat).length : 0} matchs, log-vraisemblance ${resultat.logVraisemblance})` : `(valeur de référence académique — échantillon encore trop petit pour calibrer, minimum 30 matchs résolus requis)`}.
+      Fusion Elo/Poisson : poids Elo = ${Math.round(resultat.poidsFusionElo * 100)}% (Poisson ${Math.round((1 - resultat.poidsFusionElo) * 100)}%)
+      ${resultat.poidsFusionCalibre ? `(calibré par maximum de vraisemblance sur le résultat 1X2 réel, log-vraisemblance ${resultat.logVraisemblancePoids} — remplace l'ancien 50/50 fixe)` : `(valeur par défaut 50/50 — échantillon encore trop petit pour calibrer)`}.
       ⚠️ Échantillon volontairement petit (données de démo) — un vrai backtest fiable demande des centaines de matchs.
       ⚠️ Cotes SIMULÉES — ce backtest reste indicatif. Voir le backtest sur cotes réelles archivées ci-dessous pour la version vérifiable.
+    </div>
+    <div class="card" style="font-size:12px; color:#b8b8b0; margin-top:8px;">
+      <strong>Calibration par championnat</strong> (voir calibrerConstantesLigues) :
+      ${Object.keys(resultat.constantesLigues).length === 0 ? 'Aucun match avec un champ "ligue" renseigné dans cet historique — constantes globales utilisées pour tout le monde.' :
+        Object.entries(resultat.constantesLigues).map(([ligue, c]) => c.calibree
+          ? `<br>• <strong>${escapeHtml(ligue)}</strong> (${c.nbMatchs} matchs) : moyenne ${c.moyenneButsLigue} buts/équipe, facteurs dom/ext ${c.facteurButsDomicile}/${c.facteurButsExterieur}, avantage domicile ${c.avantageDomicileElo} Elo.`
+          : `<br>• <strong>${escapeHtml(ligue)}</strong> : ${c.nbMatchs} matchs, sous le seuil de ${NB_MATCHS_MIN_POUR_CALIBRAGE_LIGUE} — constantes globales utilisées en attendant.`
+        ).join('')}
     </div>
   `;
 
@@ -3146,6 +4428,9 @@ function renderBacktest() {
     }).join('');
   }
 
+  const calibrationBox = document.getElementById('backtestCalibration');
+  if (calibrationBox) calibrationBox.innerHTML = renderCalibrationHTML(resultat.calibration);
+
   renderBacktestReel(resultat);
 }
 
@@ -3155,6 +4440,7 @@ function renderBacktest() {
 function renderBacktestReel(resultatSimule) {
   const summary = document.getElementById('backtestReelSummary');
   const detail = document.getElementById('backtestReelDetail');
+  const calibrationBox = document.getElementById('backtestReelCalibration');
   if (!summary || !detail) return;
 
   const historiqueResolu = demoMatchsHistoriques.filter(m => m.resultat);
@@ -3166,6 +4452,7 @@ function renderBacktestReel(resultatSimule) {
       Connecte Supabase pour activer l'archivage automatique via <code>mekipro_cotes_historique</code>.
     </div>`;
     detail.innerHTML = '';
+    if (calibrationBox) calibrationBox.innerHTML = '';
     return;
   }
 
@@ -3177,10 +4464,12 @@ function renderBacktestReel(resultatSimule) {
       puis clôturés avec une cote enregistrée avant leur coup d'envoi.
     </div>`;
     detail.innerHTML = '';
+    if (calibrationBox) calibrationBox.innerHTML = '';
     return;
   }
 
   const resultat = backtesterCotesReelles(historiqueResolu, equipesById, resultatSimule.rhoDixonColes);
+  if (calibrationBox) calibrationBox.innerHTML = renderCalibrationHTML(resultat.calibration);
   const roiColor = resultat.roiFictif >= 0 ? '#a8d02e' : '#f87171';
   summary.innerHTML = `
     <div class="stat-grid">
@@ -3244,6 +4533,7 @@ function renderTickets() {
         <div class="teams">
           Ticket ${t.nbSelections} sélections
           <span class="suggestion-tag tag-${t.categorie === 'sur' ? 'eleve' : t.categorie === 'equilibre' ? 'moyen' : 'faible'}">${labelCategorie[t.categorie]}</span>
+          ${t.correlationDetectee ? '<span class="suggestion-tag tag-faible" title="Au moins 2 légs le même jour dans le même championnat : probabilité combinée déjà réduite en conséquence (voir FACTEUR_DECOTE_CORRELATION_JOURNEE).">⚠️ Corrélation</span>' : ''}
         </div>
         <button class="btn-primary" data-action="add-ticket" data-ticket-index="${i}">Ajouter au carnet</button>
       </div>
@@ -3401,6 +4691,9 @@ function ajouterTicketLiveAuCarnet(ticketIndex) {
   t.legs.forEach(l => {
     const eqDom = equipesById[l.match.equipe_domicile_id];
     const eqExt = equipesById[l.match.equipe_exterieur_id];
+    // AJOUT (line shopping) — mémorise le bookmaker offrant ce prix, pour le
+    // classement par taux de réussite (calculerClassementBookmakers).
+    const attrib = attributionBookmakerParMatch(l.match.id);
     nouvellesEntrees.push({
       id: 'c' + Date.now() + Math.random().toString(36).slice(2, 7),
       match_id: l.match.id,
@@ -3412,6 +4705,7 @@ function ajouterTicketLiveAuCarnet(ticketIndex) {
       date_match_snapshot: l.match.date_match,
       ticket_id: ticketId,
       ticket_cote_totale: t.coteCombinee,
+      bookmaker: attrib[l.choix] || null,
       ...(!MODE_DEMO ? { user_id: currentUser.id } : {})
     });
   });
@@ -3435,6 +4729,9 @@ function ajouterTicketAuCarnet(ticketIndex) {
   t.legs.forEach(l => {
     const eqDom = equipesById[l.match.equipe_domicile_id];
     const eqExt = equipesById[l.match.equipe_exterieur_id];
+    // AJOUT (line shopping) — mémorise le bookmaker offrant ce prix, pour le
+    // classement par taux de réussite (calculerClassementBookmakers).
+    const attrib = attributionBookmakerParMatch(l.match.id);
     nouvellesEntrees.push({
       id: 'c' + Date.now() + Math.random().toString(36).slice(2, 7),
       match_id: l.match.id,
@@ -3446,6 +4743,7 @@ function ajouterTicketAuCarnet(ticketIndex) {
       date_match_snapshot: l.match.date_match,
       ticket_id: ticketId,
       ticket_cote_totale: t.coteCombinee,
+      bookmaker: attrib[l.choix] || null,
       ...(!MODE_DEMO ? { user_id: currentUser.id } : {})
     });
   });
@@ -3456,32 +4754,120 @@ function ajouterTicketAuCarnet(ticketIndex) {
   persisterEntreesCarnet(nouvellesEntrees);
 }
 
+// Parseur de date tolérant pour les résultats importés — accepte JJ/MM/AAAA
+// ou JJ.MM.AAAA, année sur 2 ou 4 chiffres (ex. "21/02/26" comme googlé),
+// heure optionnelle (défaut 15:00, sans grande importance pour un résultat
+// déjà joué — seul le jour compte pour la décroissance/fatigue).
+function parserDateResultat(str) {
+  const m = str.trim().match(/^(\d{1,2})[./](\d{1,2})[./](\d{2,4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+  if (!m) return null;
+  let [, jj, mm, aaaa, hh, min] = m;
+  if (aaaa.length === 2) aaaa = '20' + aaaa;
+  const d = new Date(Number(aaaa), Number(mm) - 1, Number(jj), hh ? Number(hh) : 15, min ? Number(min) : 0);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// ============================================================
+// IMPORT RÉSULTATS — CORRECTIF (date réelle + championnat + ordre chronologique)
+// ------------------------------------------------------------
+// CONSTAT (deux bugs liés, découverts en préparant l'import d'un historique
+// de saison complète — invisibles sur un import ponctuel d'un seul résultat
+// récent, mais qui auraient corrompu silencieusement tout import massif) :
+//
+// 1) date_match était toujours "maintenant" (Date.now()), jamais la vraie
+//    date du match importé, et aucun champ championnat n'était conservé.
+//    Conséquence : décroissance temporelle et calibration par championnat
+//    auraient travaillé sur des dates fictives (tous les matchs "datés
+//    d'aujourd'hui") au lieu du vrai calendrier de la saison.
+//
+// 2) Les lignes étaient traitées dans l'ORDRE OÙ ELLES SONT COLLÉES, pas
+//    dans l'ordre chronologique réel. Comme mettreAJourRatings/
+//    mettreAJourAttaqueDefense sont des mises à jour SÉQUENTIELLES
+//    (l'ordre change le résultat, exactement comme le walk-forward du
+//    backtest), coller des journées de championnat dans le désordre (ou
+//    plusieurs captures d'écran non triées) aurait fait dériver les
+//    ratings vers des valeurs fausses, sans aucune erreur visible.
+//
+// FORMATS ACCEPTÉS (nombre de champs déterminé automatiquement) :
+//   4 champs : nomDom, nomExt, butsDom, butsExt
+//              → ajout rapide d'un résultat récent, sans date ni championnat
+//                (comportement historique inchangé : date = maintenant)
+//   5 champs : nomDom, nomExt, date, butsDom, butsExt
+//   6 champs : soit nomDom, nomExt, date, butsDom, butsExt, championnat
+//              soit nomDom, nomExt, butsDom, butsExt, xgDom, xgExt (legacy)
+//              → distingués en testant si le 3e champ ressemble à une date
+//   8 champs : nomDom, nomExt, date, butsDom, butsExt, championnat, xgDom, xgExt
+// Dates au format JJ/MM/AAAA ou JJ.MM.AAAA (année 2 ou 4 chiffres).
+// ============================================================
 function importerResultats() {
   const texte = document.getElementById('importInput').value.trim();
   const feedback = document.getElementById('importFeedback');
   if (!texte) { feedback.textContent = 'Colle au moins une ligne de résultat.'; return; }
 
   const lignes = texte.split('\n').map(l => l.trim()).filter(Boolean);
-  let importes = 0, erreurs = [];
+  const candidats = [];
+  const erreurs = [];
 
+  // PASSE 1 — parsing et validation uniquement, AUCUNE mutation d'équipe
+  // ici : on doit connaître la vraie date de CHAQUE ligne avant de décider
+  // dans quel ordre les traiter (voir passe 2).
   lignes.forEach(ligne => {
-    // CORRECTIF SÉCURITÉ — `ligne` vient d'un textarea (saisie libre de
-    // l'utilisateur) et finit dans innerHTML via feedback.innerHTML plus bas.
-    // Sans échappement, un texte collé contenant "<img src=x onerror=...>"
-    // s'exécutait (auto-XSS). On échappe systématiquement avant de le
-    // réutiliser dans un message d'erreur affiché à l'écran.
+    // CORRECTIF SÉCURITÉ — voir plus haut : jamais de HTML brut de l'utilisateur
+    // dans un message affiché sans échappement.
     const ligneAffichee = escapeHtml(ligne);
     const parties = ligne.split(',').map(p => p.trim());
-    if (parties.length !== 4) { erreurs.push(`Ligne invalide : "${ligneAffichee}"`); return; }
-    const [nomDom, nomExt, butsDomStr, butsExtStr] = parties;
+
+    let nomDom, nomExt, dateStr = null, butsDomStr, butsExtStr, ligue = null, xgDomStr = null, xgExtStr = null;
+
+    if (parties.length === 4) {
+      [nomDom, nomExt, butsDomStr, butsExtStr] = parties;
+    } else if (parties.length === 5) {
+      [nomDom, nomExt, dateStr, butsDomStr, butsExtStr] = parties;
+    } else if (parties.length === 6) {
+      // Distingue les deux formats à 6 champs par la forme du 3e champ.
+      if (parserDateResultat(parties[2])) {
+        [nomDom, nomExt, dateStr, butsDomStr, butsExtStr, ligue] = parties;
+      } else {
+        [nomDom, nomExt, butsDomStr, butsExtStr, xgDomStr, xgExtStr] = parties;
+      }
+    } else if (parties.length === 8) {
+      [nomDom, nomExt, dateStr, butsDomStr, butsExtStr, ligue, xgDomStr, xgExtStr] = parties;
+    } else {
+      erreurs.push(`Ligne invalide : "${ligneAffichee}"`); return;
+    }
+
+    let dateMatch = new Date();
+    if (dateStr) {
+      const d = parserDateResultat(dateStr);
+      if (!d) { erreurs.push(`Date invalide (attendu JJ/MM/AAAA) : "${ligneAffichee}"`); return; }
+      dateMatch = d;
+    }
+
     const butsDom = parseInt(butsDomStr, 10);
     const butsExt = parseInt(butsExtStr, 10);
     if (isNaN(butsDom) || isNaN(butsExt)) { erreurs.push(`Score invalide : "${ligneAffichee}"`); return; }
+
+    let xgReelSaisi = null;
+    if (xgDomStr != null) {
+      const xgDom = parseFloat(xgDomStr);
+      const xgExt = parseFloat(xgExtStr);
+      if (isNaN(xgDom) || isNaN(xgExt)) { erreurs.push(`xG invalide : "${ligneAffichee}"`); return; }
+      xgReelSaisi = { domicile: xgDom, exterieur: xgExt };
+    }
 
     const eqDom = demoEquipes.find(e => e.nom.toLowerCase() === nomDom.toLowerCase());
     const eqExt = demoEquipes.find(e => e.nom.toLowerCase() === nomExt.toLowerCase());
     if (!eqDom || !eqExt) { erreurs.push(`Équipe inconnue dans : "${ligneAffichee}"`); return; }
 
+    candidats.push({ eqDom, eqExt, butsDom, butsExt, xgReelSaisi, dateMatch, ligue: ligue || null, ligneAffichee });
+  });
+
+  // PASSE 2 — tri chronologique AVANT tout traitement, puis mise à jour
+  // séquentielle dans le vrai ordre du calendrier (voir CORRECTIF ci-dessus).
+  candidats.sort((a, b) => a.dateMatch - b.dateMatch);
+
+  let importes = 0;
+  candidats.forEach(({ eqDom, eqExt, butsDom, butsExt, xgReelSaisi, dateMatch, ligue }) => {
     const resultat = butsDom > butsExt ? '1' : butsDom < butsExt ? '2' : 'N';
     const ecartButs = Math.abs(butsDom - butsExt);
 
@@ -3493,11 +4879,13 @@ function importerResultats() {
     // CORRECTIF — met aussi à jour attaque/défense (auparavant figées à vie
     // après la création de l'équipe, voir mettreAJourAttaqueDefense). On
     // recalcule le xG pré-match avec l'état ACTUEL (avant mise à jour) pour
-    // mesurer l'écart entre buts attendus et buts réels.
+    // mesurer l'écart entre buts attendus et buts réels. Utilise le xG réel
+    // saisi (xgReelSaisi) comme signal observé à la place des buts bruts
+    // quand il est fourni, voir mettreAJourAttaqueDefense.
     const xgAvantMatch = calculerButsAttendus(eqDom, eqExt);
-    const nouvellesForces = mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, xgAvantMatch);
-    eqDom.attaque = nouvellesForces.attaqueDom; eqDom.defense = nouvellesForces.defenseDom;
-    eqExt.attaque = nouvellesForces.attaqueExt; eqExt.defense = nouvellesForces.defenseExt;
+    const nouvellesForces = mettreAJourAttaqueDefense(eqDom, eqExt, butsDom, butsExt, xgAvantMatch, xgReelSaisi);
+    eqDom.attaqueDom = nouvellesForces.attaqueDom; eqDom.defenseDom = nouvellesForces.defenseDom;
+    eqExt.attaqueExt = nouvellesForces.attaqueExt; eqExt.defenseExt = nouvellesForces.defenseExt;
 
     // Met à jour la forme récente (garde les 8 derniers résultats)
     const scoreDom = resultat === '1' ? 1 : resultat === 'N' ? 0.5 : 0;
@@ -3509,14 +4897,16 @@ function importerResultats() {
     sauvegarderEquipeSupabase(eqDom);
     sauvegarderEquipeSupabase(eqExt);
 
-    // Ajoute aussi ce match à l'historique de backtest pour affiner les stats
+    // Ajoute aussi ce match à l'historique de backtest, avec sa VRAIE date
+    // et son championnat (voir CORRECTIF ci-dessus) au lieu de "maintenant".
     const nouveauMatch = {
-      id: 'imp' + Date.now() + Math.round(Math.random() * 1000),
+      id: 'imp' + Date.now() + Math.round(Math.random() * 1000) + Math.round(Math.random() * 1000),
       equipe_domicile_id: eqDom.id,
       equipe_exterieur_id: eqExt.id,
-      date_match: new Date().toISOString(),
+      date_match: dateMatch.toISOString(),
       resultat,
-      score: `${butsDom}-${butsExt}`
+      score: `${butsDom}-${butsExt}`,
+      ligue
     };
     demoMatchsHistoriques.push(nouveauMatch);
     sauvegarderMatchTermineSupabase(nouveauMatch);
@@ -3543,6 +4933,305 @@ function importerResultats() {
   renderTickets();
   renderLive();
   renderTicketsLive();
+}
+
+// ============================================================
+// IMPORT MANUEL DES COTES (bookmaker) — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : sync-matchs dépend du quota API-Football (100 requêtes/jour),
+// et l'endpoint /odds est le premier à en pâtir (voir les 429 rencontrés
+// en pratique). En attendant que la synchro automatique rattrape son
+// retard, l'utilisateur peut lire une cote directement sur un site de
+// bookmaker (capture d'écran) et la coller ici — ça alimente exactement le
+// même pipeline (cotesReellesParMatch → cotesDepuisReel → edge/overround)
+// que si sync-matchs l'avait synchronisée, sans consommer le moindre
+// quota API.
+//
+// Deux formats de ligne acceptés :
+//   5 champs : nomDom, nomExt, cote1, coteN, cote2
+//     → le match doit déjà exister (créé par sync-matchs ou un import
+//       précédent) ; retrouvé par nom d'équipe, peu importe la date.
+//   6 champs : nomDom, nomExt, JJ/MM/AAAA HH:MM, cote1, coteN, cote2
+//     → si le match n'existe pas encore, il est créé (statut 'a_venir')
+//       avec cette date. S'il existe déjà, la date fournie est ignorée.
+//
+// Persisté en base avec bookmaker='manuel' (voir priorité de sélection
+// dans chargerDonneesSupabase : '__meilleures__' > '__consensus__' >
+// 'manuel' > bookmaker isolé — une vraie synchro ultérieure reprend
+// naturellement le dessus si elle arrive, jamais l'inverse).
+// ============================================================
+// ============================================================
+// IMPORT DE COTES PAR CAPTURE D'ÉCRAN (OCR) — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : coller les cotes à la main (importerCotesManuel ci-dessous) reste
+// la voie la plus fiable, mais recopier chiffre par chiffre depuis une capture
+// est fastidieux dès qu'il y a plusieurs matchs. Cette fonction lit l'image
+// avec Tesseract.js (100% côté client, aucun envoi serveur autre que le CDN
+// qui sert la lib) et PRÉ-REMPLIT la zone de texte existante avec des lignes
+// au format attendu par importerCotesManuel — elle n'importe JAMAIS
+// directement en base : l'OCR peut confondre un "1" et un "l", tronquer un nom
+// d'équipe, etc. L'utilisateur relit/corrige puis clique "Importer ces cotes"
+// comme d'habitude, donc aucun nouveau chemin de validation à maintenir.
+//
+// Hypothèse sur la mise en page (vérifiée sur BetMomo, transposable à la
+// plupart des sites de paris mobile) : chaque match est un bloc contenant,
+// dans le désordre, (1) une date+heure "JJ.MM.AAAA HH:MM", (2) le nom des deux
+// équipes (chacun apparaît généralement deux fois : liste de gauche + libellé
+// du bouton de pari — dédupliqué ci-dessous), (3) trois nombres au format
+// cote (ex. 1.82) dans l'ordre 1 / Nul / 2. On découpe le texte OCR en blocs
+// à chaque nouvelle date rencontrée, puis on extrait noms et cotes par bloc.
+// ============================================================
+
+// Libellés d'interface à ignorer (menus, boutons, pagination…) — liste non
+// exhaustive, complétée au fil des sites rencontrés. Tout ce qui n'est ni une
+// date, ni une cote, ni dans cette liste est traité comme nom d'équipe candidat.
+const OCR_BRUIT_UI = new Set([
+  'TELEGRAM', 'PROMOTION', 'LIVE CHAT', 'SIGN IN', 'REGISTER', 'EVENT VIEW',
+  'TOURNAMENTS', 'LIVE CALENDAR', 'STATISTICS', 'RESULTS', 'MATCH RESULT',
+  'DOUBLE CHANCE', 'DRAW NO BET', 'GOALS HANDICAP', 'BETMOMO', 'LIVE',
+  'SPORTS', 'BETSLIP', 'CASINO', 'X', 'BB', 'HOME'
+]);
+
+function parserTexteOCRCotes(texte) {
+  const dateRe = /(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})\s+(\d{1,2}):(\d{2})/;
+  const oddRe = /\b\d{1,2}\.\d{2}\b/g;
+  const lignesBrutes = texte.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Découpe en blocs : un nouveau bloc démarre à chaque date reconnue.
+  const blocs = [];
+  let blocCourant = null;
+  lignesBrutes.forEach(ligne => {
+    const mDate = ligne.match(dateRe);
+    if (mDate) {
+      const [, jj, mm, aaaa, hh, min] = mDate;
+      blocCourant = {
+        date: `${jj.padStart(2, '0')}/${mm.padStart(2, '0')}/${aaaa} ${hh.padStart(2, '0')}:${min}`,
+        lignes: []
+      };
+      blocs.push(blocCourant);
+      return;
+    }
+    if (blocCourant) blocCourant.lignes.push(ligne);
+  });
+
+  const suggestions = [];
+  const avertissements = [];
+
+  blocs.forEach(bloc => {
+    const cotes = [];
+    const nomsCandidats = [];
+    bloc.lignes.forEach(ligne => {
+      const cotesTrouvees = ligne.match(oddRe);
+      if (cotesTrouvees) { cotes.push(...cotesTrouvees.map(Number)); return; }
+      if (/^[+\-]?\d+$/.test(ligne)) return; // pagination, compteurs (+938…)
+      if (OCR_BRUIT_UI.has(ligne.toUpperCase())) return;
+      if (ligne.length < 2) return;
+      nomsCandidats.push(ligne);
+    });
+
+    // Un même nom d'équipe apparaît en général 2 fois (liste + libellé du
+    // bouton de pari) — on ne garde que les 2 premiers noms distincts,
+    // dans l'ordre d'apparition (= domicile puis extérieur).
+    const nomsUniques = [...new Set(nomsCandidats)];
+
+    if (nomsUniques.length < 2 || cotes.length < 3) {
+      avertissements.push(`Bloc du ${bloc.date} incomplet (équipes ou cotes manquantes) — à compléter à la main.`);
+      return;
+    }
+
+    const [nomDom, nomExt] = nomsUniques;
+    const [coteDom, coteNul, coteExt] = cotes;
+    suggestions.push(`${nomDom}, ${nomExt}, ${bloc.date}, ${coteDom.toFixed(2)}, ${coteNul.toFixed(2)}, ${coteExt.toFixed(2)}`);
+  });
+
+  return { suggestions, avertissements };
+}
+
+async function analyserCaptureCotes() {
+  const input = document.getElementById('captureCotesFichier');
+  const feedback = document.getElementById('captureCotesFeedback');
+  const fichier = input.files && input.files[0];
+  if (!fichier) { feedback.textContent = 'Choisis une image de capture d\'écran d\'abord.'; return; }
+  if (typeof Tesseract === 'undefined') {
+    feedback.innerHTML = '<span style="color:#f87171;">Impossible de charger le moteur OCR (Tesseract.js) — vérifie ta connexion internet et réessaie.</span>';
+    return;
+  }
+
+  feedback.textContent = 'Analyse en cours… (peut prendre 10-30s selon la taille de l\'image)';
+  try {
+    const { data: { text } } = await Tesseract.recognize(fichier, 'eng');
+    const { suggestions, avertissements } = parserTexteOCRCotes(text);
+
+    if (suggestions.length === 0) {
+      feedback.innerHTML = '<span style="color:#f87171;">Aucun match reconnu dans cette image. Réessaie avec une capture plus nette (zoom sur les cotes) ou complète à la main ci-dessous.</span>';
+      return;
+    }
+
+    // Complète (n'écrase pas) le contenu déjà présent dans la zone de texte.
+    const zone = document.getElementById('importCotesInput');
+    zone.value = (zone.value ? zone.value.trim() + '\n' : '') + suggestions.join('\n');
+
+    feedback.innerHTML = `${suggestions.length} match(s) reconnu(s) — <strong>relis chaque ligne ci-dessous avant d'importer</strong> (l'OCR peut se tromper sur un chiffre ou un nom).` +
+      (avertissements.length ? `<br><span style="color:#f0bb52;">${avertissements.join('<br>')}</span>` : '');
+  } catch (e) {
+    feedback.innerHTML = `<span style="color:#f87171;">Échec de l'analyse : ${escapeHtml(e.message)}</span>`;
+  }
+}
+
+function parserDateFrManuelle(str) {
+  // Format attendu JJ/MM/AAAA HH:MM ou JJ.MM.AAAA HH:MM (les bookmakers
+  // utilisent souvent des points, ex. BetMomo affiche "05.07.2026 20:00") —
+  // volontairement tolérant sur le séparateur date (/ ou .).
+  const m = str.trim().match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})\s+(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const [, jj, mm, aaaa, hh, min] = m;
+  const d = new Date(Number(aaaa), Number(mm) - 1, Number(jj), Number(hh), Number(min));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// AJOUT (line shopping, import manuel) — affiche le champ texte libre
+// seulement quand "Autre…" est sélectionné, pour ne pas alourdir le cas
+// courant (les bookmakers les plus fréquents sont déjà dans la liste).
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'importCotesBookmaker') {
+    const autre = document.getElementById('importCotesBookmakerAutre');
+    autre.style.display = e.target.value === '__autre__' ? '' : 'none';
+  }
+});
+
+async function importerCotesManuel() {
+  const texte = document.getElementById('importCotesInput').value.trim();
+  const feedback = document.getElementById('importCotesFeedback');
+  if (!texte) { feedback.textContent = 'Colle au moins une ligne de cotes.'; return; }
+
+  const lignes = texte.split('\n').map(l => l.trim()).filter(Boolean);
+  let importes = 0, erreurs = [];
+
+  // AJOUT (line shopping) — nom du bookmaker choisi pour CE lot d'import
+  // (toutes les lignes collées ensemble partagent la même source). 'manuel'
+  // par défaut si non précisé, pour ne rien changer au comportement existant.
+  const selectBk = document.getElementById('importCotesBookmaker');
+  const bookmakerChoisi = selectBk && selectBk.value === '__autre__'
+    ? (document.getElementById('importCotesBookmakerAutre').value.trim() || 'manuel')
+    : ((selectBk && selectBk.value) || 'manuel');
+
+  for (const ligne of lignes) {
+    const ligneAffichee = escapeHtml(ligne);
+    const parties = ligne.split(',').map(p => p.trim());
+    if (parties.length !== 5 && parties.length !== 6) {
+      erreurs.push(`Ligne invalide : "${ligneAffichee}"`); continue;
+    }
+
+    const nomDom = parties[0], nomExt = parties[1];
+    const dateStr = parties.length === 6 ? parties[2] : null;
+    const [coteDomStr, coteNulStr, coteExtStr] = parties.slice(-3);
+    const coteDom = parseFloat(coteDomStr), coteNul = parseFloat(coteNulStr), coteExt = parseFloat(coteExtStr);
+    if (!isFinite(coteDom) || !isFinite(coteNul) || !isFinite(coteExt) || coteDom <= 1 || coteNul <= 1 || coteExt <= 1) {
+      erreurs.push(`Cotes invalides : "${ligneAffichee}"`); continue;
+    }
+
+    const eqDom = demoEquipes.find(e => e.nom.toLowerCase() === nomDom.toLowerCase());
+    const eqExt = demoEquipes.find(e => e.nom.toLowerCase() === nomExt.toLowerCase());
+    if (!eqDom || !eqExt) { erreurs.push(`Équipe inconnue dans : "${ligneAffichee}"`); continue; }
+
+    // Retrouve le match par équipes (peu importe la date) parmi les matchs
+    // déjà connus (à venir ou en cours) — jamais parmi l'historique résolu.
+    let match = demoMatchs.find(mm =>
+      mm.equipe_domicile_id === eqDom.id && mm.equipe_exterieur_id === eqExt.id);
+
+    if (!match) {
+      if (!dateStr) {
+        erreurs.push(`Match inconnu, date requise pour le créer : "${ligneAffichee}"`); continue;
+      }
+      const dateMatch = parserDateFrManuelle(dateStr);
+      if (!dateMatch) { erreurs.push(`Date invalide (attendu JJ/MM/AAAA HH:MM) : "${ligneAffichee}"`); continue; }
+      match = {
+        id: 'manuel' + Date.now() + Math.round(Math.random() * 1000),
+        equipe_domicile_id: eqDom.id, equipe_exterieur_id: eqExt.id,
+        date_match: dateMatch.toISOString(), statut: 'a_venir', ligue: null,
+        joueurs_domicile: 11, joueurs_exterieur: 11, evenements_live: []
+      };
+      demoMatchs.push(match);
+      sauvegarderMatchAVenirSupabase(match);
+    }
+
+    const ligneCote = {
+      match_id: match.id, bookmaker: bookmakerChoisi,
+      domicile: coteDom, nul: coteNul, exterieur: coteExt,
+      plus25: null, moins25: null, btts: null, sans_btts: null,
+      double_chance_1x: null, double_chance_x2: null, double_chance_12: null,
+      updated_at: new Date().toISOString()
+    };
+    cotesReellesParMatch[match.id] = ligneCote;
+    if (!MODE_DEMO) {
+      try {
+        await supabaseClient.from('mekipro_cotes').upsert(ligneCote);
+      } catch (e) {
+        console.warn('Écriture cote manuelle échouée :', e.message);
+      }
+    }
+    importes++;
+  }
+
+  feedback.innerHTML = `${importes} cote(s) importée(s).` +
+    (erreurs.length ? `<br><span style="color:#f87171;">${erreurs.join('<br>')}</span>` : '');
+  document.getElementById('importCotesInput').value = '';
+
+  renderPronostics();
+  renderSuggestions();
+  renderMatchs();
+  renderTickets();
+}
+
+// ============================================================
+// IMPORT MANUEL DES ÉQUIPES (championnat) — AJOUT
+// ------------------------------------------------------------
+// CONSTAT : ni importerResultats() ni importerCotesManuel() ne créent
+// d'équipe manquante ("Équipe inconnue" bloque l'import) — volontaire pour
+// ces deux imports (une faute de frappe sur un nom existant créerait
+// silencieusement un doublon plutôt que de prévenir l'utilisateur). Mais
+// ça oblige à importer un premier résultat "bidon" juste pour faire exister
+// chaque équipe d'un championnat avant de pouvoir importer quoi que ce
+// soit d'autre le concernant. Ce formulaire couvre ce cas : pré-remplir
+// toutes les équipes d'un championnat EN UNE FOIS (lues sur une liste/un
+// classement), avant le premier résultat ou la première cote.
+//
+// Équipes créées à l'état neutre (rating 1500, forces à 1.0), exactement
+// comme equipeOuCreation() côté sync-matchs — remonteront progressivement
+// une fois de vrais résultats/xG importés pour elles.
+// ============================================================
+function idEquipeDepuisNom(nom) {
+  return 'manuel_' + nom.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '_');
+}
+
+async function importerEquipesManuel() {
+  const texte = document.getElementById('importEquipesInput').value.trim();
+  const feedback = document.getElementById('importEquipesFeedback');
+  if (!texte) { feedback.textContent = 'Colle au moins un nom d\'équipe.'; return; }
+
+  const noms = texte.split('\n').map(l => l.trim()).filter(Boolean);
+  let creees = 0, ignorees = 0;
+
+  for (const nom of noms) {
+    const existante = demoEquipes.find(e => e.nom.toLowerCase() === nom.toLowerCase());
+    if (existante) { ignorees++; continue; }
+
+    const equipe = {
+      id: idEquipeDepuisNom(nom), nom,
+      rating: 1500, attaqueDom: 1.0, defenseDom: 1.0, attaqueExt: 1.0, defenseExt: 1.0,
+      matchs_joues: 0, forme: []
+    };
+    demoEquipes.push(equipe);
+    equipesById[equipe.id] = equipe;
+    await ajouterEquipeSupabase(equipe);
+    creees++;
+  }
+
+  feedback.innerHTML = `${creees} équipe(s) créée(s)` +
+    (ignorees ? `, ${ignorees} déjà connue(s) (ignorée(s)).` : '.');
+  document.getElementById('importEquipesInput').value = '';
+
+  renderEquipes();
 }
 
 // ============================================================
@@ -3587,9 +5276,16 @@ async function invoquerSyncAvecReprise(tentativesMax = 2) {
 async function attendreFinSynchro(delaiMaxMs = 90000, intervalleMs = 2000) {
   const debut = Date.now();
   while (Date.now() - debut < delaiMaxMs) {
-    const { data, error } = await supabaseClient
-      .from('mekipro_sync_status').select('*').eq('id', 'main').maybeSingle();
-    if (!error && data && data.running === false) return data;
+    try {
+      const { data, error } = await supabaseClient
+        .from('mekipro_sync_status').select('*').eq('id', 'main').maybeSingle();
+      if (!error && data && data.running === false) return data;
+    } catch (e) {
+      // Aléa réseau ponctuel (cf. synchroDemarreeRecemment ci-dessus, qui a le
+      // même filet) : on ne casse pas toute la boucle de suivi pour un seul
+      // appel raté, on retente simplement au prochain intervalle.
+      console.warn('attendreFinSynchro : requête de statut échouée, nouvelle tentative…', e.message);
+    }
     await new Promise(r => setTimeout(r, intervalleMs));
   }
   console.warn('attendreFinSynchro : délai dépassé, poursuite sans le détail du résultat.');
@@ -3734,7 +5430,7 @@ function renderSyncStatus(erreurs = 0) {
 // et pariable indéfiniment). On fige donc un instantané de ces infos dans
 // l'entrée du carnet au moment du pari, pour un affichage fiable même après
 // la disparition du match de la liste "à venir".
-function ajouterAuCarnet(matchId, choix, cote) {
+function ajouterAuCarnet(matchId, choix, cote, bookmaker) {
   // AJOUT (SEC-01) — sans compte, aucune ligne ne peut être écrite dans
   // mekipro_carnet (RLS) : on ouvre le modal de connexion plutôt que de laisser
   // échouer silencieusement un insert fire-and-forget.
@@ -3751,6 +5447,10 @@ function ajouterAuCarnet(matchId, choix, cote) {
     nom_domicile: eqDom ? eqDom.nom : '?',
     nom_exterieur: eqExt ? eqExt.nom : '?',
     date_match_snapshot: m ? m.date_match : null,
+    // AJOUT (line shopping) — bookmaker chez qui cette cote a été trouvée
+    // (voir attributionBookmakerParMatch), pour alimenter le classement des
+    // bookmakers par taux de réussite (calculerClassementBookmakers).
+    bookmaker: bookmaker || null,
     ...(!MODE_DEMO ? { user_id: currentUser.id } : {})
   };
   carnetDemo.push(entree);
@@ -3932,7 +5632,7 @@ tousLesOnglets.forEach((tab, index) => {
 document.querySelector('.content').addEventListener('click', (e) => {
   const elCarnet = e.target.closest('[data-action="add-carnet"]');
   if (elCarnet) {
-    ajouterAuCarnet(elCarnet.dataset.matchId, elCarnet.dataset.choix, Number(elCarnet.dataset.cote));
+    ajouterAuCarnet(elCarnet.dataset.matchId, elCarnet.dataset.choix, Number(elCarnet.dataset.cote), elCarnet.dataset.bookmaker || null);
     return;
   }
   const elTicket = e.target.closest('[data-action="add-ticket"]');
@@ -3992,6 +5692,19 @@ document.querySelector('.content').addEventListener('click', (e) => {
   const elImport = e.target.closest('[data-action="importer-resultats"]');
   if (elImport) {
     importerResultats();
+  }
+  const elImportCotes = e.target.closest('[data-action="importer-cotes"]');
+  if (elImportCotes) {
+    importerCotesManuel();
+  }
+  // AJOUT — analyse OCR d'une capture d'écran de cotes (voir analyserCaptureCotes).
+  const elAnalyserCapture = e.target.closest('[data-action="analyser-capture-cotes"]');
+  if (elAnalyserCapture) {
+    analyserCaptureCotes();
+  }
+  const elImportEquipes = e.target.closest('[data-action="importer-equipes"]');
+  if (elImportEquipes) {
+    importerEquipesManuel();
   }
 });
 
