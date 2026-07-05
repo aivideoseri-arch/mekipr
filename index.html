@@ -415,7 +415,8 @@
      role=tablist sur le conteneur, role=tab + aria-selected + tabindex géré
      par script sur chaque onglet, aria-controls vers le panneau associé. -->
 <div class="tabs" id="tabsRow" role="tablist" aria-label="Sections de MEKIPRO">
-  <div class="tab active" id="tab-suggestions" data-view="suggestions" role="tab" aria-selected="true" aria-controls="view-suggestions" tabindex="0">Suggestions</div>
+  <div class="tab active" id="tab-pronostics" data-view="pronostics" role="tab" aria-selected="true" aria-controls="view-pronostics" tabindex="0">Pronostics</div>
+  <div class="tab" id="tab-suggestions" data-view="suggestions" role="tab" aria-selected="false" aria-controls="view-suggestions" tabindex="-1">Suggestions</div>
   <div class="tab" id="tab-matchs" data-view="matchs" role="tab" aria-selected="false" aria-controls="view-matchs" tabindex="-1">Tous les matchs</div>
   <div class="tab" id="tab-carnet" data-view="carnet" role="tab" aria-selected="false" aria-controls="view-carnet" tabindex="-1">Mon carnet</div>
   <div class="tab" id="tab-equipes" data-view="equipes" role="tab" aria-selected="false" aria-controls="view-equipes" tabindex="-1">Équipes</div>
@@ -429,7 +430,21 @@
 
 <div class="content">
 
-  <div class="view active" id="view-suggestions" role="tabpanel" aria-labelledby="tab-suggestions" tabindex="0">
+  <div class="view active" id="view-pronostics" role="tabpanel" aria-labelledby="tab-pronostics" tabindex="0">
+    <div class="stat-grid">
+      <div class="stat-box"><div class="num" id="statPronostics">0</div><div class="lbl">Pronostics du modèle</div></div>
+      <div class="stat-box"><div class="num" id="statPronosticsConfianceElevee">0</div><div class="lbl">Confiance élevée</div></div>
+    </div>
+    <!-- Pronostics purs : uniquement basés sur les stats/forme/xG internes du
+         modèle, SANS aucune cote bookmaker. Toujours disponibles, même sans
+         synchronisation de cotes réelles — voir genererPronosticsModele().
+         Pour les value bets (comparaison à une vraie cote de marché), voir
+         l'onglet "Suggestions". -->
+    <div class="section-title">Ce que prédit le modèle, sans référence à une cote</div>
+    <div id="pronosticsList"></div>
+  </div>
+
+  <div class="view" id="view-suggestions" role="tabpanel" aria-labelledby="tab-suggestions" tabindex="0">
     <div class="stat-grid">
       <div class="stat-box"><div class="num" id="statSuggestions">0</div><div class="lbl">Suggestions actives</div></div>
       <div class="stat-box"><div class="num" id="statValueBets">0</div><div class="lbl">Value bets détectés</div></div>
@@ -520,9 +535,10 @@
     </div>
 
     <div class="section-title">Synchronisation automatique (API-Football)</div>
-    <div class="card">
-      <div id="synchroDetail" class="meta"></div>
-      <button class="btn-primary" style="margin-top:10px;" data-action="forcer-synchro">Forcer une synchro maintenant</button>
+    <div class="card" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+      <div id="synchroDetail" class="meta" style="width:100%;"></div>
+      <button class="btn-primary" id="btnToggleSyncAuto" data-action="toggle-sync-auto">Synchro auto : —</button>
+      <button class="btn-primary" data-action="forcer-synchro">Forcer une synchro maintenant</button>
     </div>
 
     <div class="section-title">Championnats et coupes détectés automatiquement</div>
@@ -1229,6 +1245,58 @@ let dernierSyncTimestamp = null;
 let liguesRencontrees = new Map(); // championnats/coupes détectés lors de la dernière synchro (index -> {nom})
 
 // ============================================================
+// COUPE-CIRCUIT QUOTA API-FOOTBALL — AJOUT
+// ------------------------------------------------------------
+// Avec un quota gratuit de 100 requêtes/jour, laisser tourner la synchro
+// automatique (24 appels/jour rien que sur l'intervalle de 60 min, plus
+// potentiellement des centaines d'appels de polling live pendant un match
+// en direct — voir LIVE_POLL_SECONDES) épuise le quota en quelques heures.
+// SYNCHRO_AUTO_ACTIVE = false désactive à la fois :
+//   1) le rafraîchissement périodique (setInterval, voir demarrerSynchroAuto),
+//   2) le polling live (demarrerOuArreterPollingLive()).
+// Pilotable directement depuis l'app (bouton "Synchro auto : ON/OFF" dans
+// l'onglet Synchronisation, voir basculerSynchroAuto()) : ON quand tu veux
+// suivre des matchs en direct ou récupérer les derniers résultats, OFF une
+// fois les données récupérées, pour ne plus rien consommer sur ton quota.
+// L'état choisi est mémorisé dans localStorage, donc conservé d'une visite
+// à l'autre. Le bouton "Forcer la synchro" continue lui de fonctionner
+// dans tous les cas : chaque clic = 1 appel voulu, jamais automatique.
+// ============================================================
+let SYNCHRO_AUTO_ACTIVE = localStorage.getItem('mekipro_synchro_auto') === 'true';
+let syncIntervalId = null;
+
+// Démarre (ou ne fait rien si déjà démarré) le rafraîchissement périodique
+// côté client. Séparé de initialiser() pour pouvoir être (re)déclenché
+// depuis basculerSynchroAuto() sans dupliquer la logique de synchro.
+function demarrerSynchroAutoPeriodique() {
+  if (syncIntervalId) return;
+  syncIntervalId = setInterval(synchroniserAutomatiquement, SYNC_INTERVALLE_MINUTES * 60 * 1000);
+}
+
+function arreterSynchroAutoPeriodique() {
+  if (syncIntervalId) { clearInterval(syncIntervalId); syncIntervalId = null; }
+}
+
+// Active/désactive la synchro auto (périodique + live) à la demande, depuis
+// le bouton de l'onglet Synchronisation. Volontairement lu/écrit à chaque
+// appel (pas de cache) pour rester la seule source de vérité de l'état.
+async function basculerSynchroAuto() {
+  if (MODE_DEMO) return;
+  SYNCHRO_AUTO_ACTIVE = !SYNCHRO_AUTO_ACTIVE;
+  localStorage.setItem('mekipro_synchro_auto', String(SYNCHRO_AUTO_ACTIVE));
+
+  if (SYNCHRO_AUTO_ACTIVE) {
+    demarrerSynchroAutoPeriodique();
+    demarrerOuArreterPollingLive(); // démarre tout de suite si un match est déjà en direct
+    await synchroniserAutomatiquement(); // 1 appel volontaire, déclenché par le clic
+  } else {
+    arreterSynchroAutoPeriodique();
+    if (liveIntervalId) { clearInterval(liveIntervalId); liveIntervalId = null; }
+    renderSyncStatus();
+  }
+}
+
+// ============================================================
 // SYNCHRO ÉVÉNEMENTS LIVE (cartons/blessures/remplacements) — AJOUT
 // ------------------------------------------------------------
 // Cycle séparé et beaucoup plus rapide que la synchro générale (60 min) :
@@ -1244,6 +1312,7 @@ let liveIntervalId = null;
 
 function demarrerOuArreterPollingLive() {
   if (MODE_DEMO) return;
+  if (!SYNCHRO_AUTO_ACTIVE) return; // coupe-circuit quota — voir SYNCHRO_AUTO_ACTIVE
   const enCours = demoMatchs.some(m => m.statut === 'en_cours');
   if (enCours && !liveIntervalId) {
     liveIntervalId = setInterval(synchroniserEvenementsLive, LIVE_POLL_SECONDES * 1000);
@@ -1634,6 +1703,100 @@ function genererSuggestions(matchs, equipesById, marge = 0.06) {
     }
   });
   return suggestions.sort((a, b) => b.edge - a.edge);
+}
+
+// ============================================================
+// PRONOSTICS DU MODÈLE — mode pur, SANS cote
+// ------------------------------------------------------------
+// Contrairement à genererSuggestions() (qui exige une vraie cote bookmaker
+// pour calculer un edge, et renvoie donc une liste vide tant qu'aucune cote
+// n'est synchronisée), cette fonction répond à une question différente :
+// "que pense mon propre modèle de ce match ?", pas "y a-t-il un value bet
+// chez un bookmaker ?". Elle n'a donc besoin que des stats internes
+// (rating, forme, xG, confrontations) déjà utilisées par calculerProbabilites,
+// et reste TOUJOURS disponible, avec ou sans cotes/Supabase/API-Football.
+// Le choix retenu par match est celui à la plus forte probabilité brute
+// parmi tous les marchés couverts par le modèle (pas de notion d'edge ici).
+// ============================================================
+
+// Niveau de confiance d'un pronostic pur : dépend de la probabilité brute ET
+// du volume de données disponibles (nb de matchs joués) — une probabilité
+// élevée calculée sur un historique trop court reste peu fiable, comme pour
+// niveauConfiance() côté value bets.
+function niveauConfianceModele(proba, matchsJoues) {
+  if (matchsJoues < 5) return 'faible';
+  if (proba >= 0.60 && matchsJoues >= 10) return 'eleve';
+  if (proba >= 0.50) return 'moyen';
+  return 'faible';
+}
+
+// Même structure de texte explicatif que genererRaison(), mais centré sur la
+// probabilité du modèle plutôt que sur un edge (qui n'existe pas ici, faute
+// de cote de marché à comparer).
+function genererRaisonModele(eqDom, eqExt, choix, probaPct, xg) {
+  const formeDom = Math.round(formePonderee(eqDom.forme) * 100);
+  const formeExt = Math.round(formePonderee(eqExt.forme) * 100);
+  const xgTxt = `xG attendus ${xg.domicile.toFixed(2)} - ${xg.exterieur.toFixed(2)}`;
+  if (choix === '1') return `${eqDom.nom} favori du modèle (forme récente ${formeDom}% vs ${formeExt}%). ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  if (choix === '2') return `${eqExt.nom} favori du modèle malgré le déplacement (forme ${formeExt}% vs ${formeDom}%). ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  if (choix === 'N') return `Match jugé équilibré par le modèle, nul probable (forme ${formeDom}% vs ${formeExt}%). ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  if (choix.startsWith('Double Chance')) return `Le modèle sécurise l'issue (${choix.replace('Double Chance ', '')}), forme ${formeDom}% vs ${formeExt}%. ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  if (choix === 'Plus 1.5' || choix === 'Plus 2.5' || choix === 'Plus 3.5') return `Match jugé ouvert offensivement par le modèle, ${xgTxt} (total attendu ${(xg.domicile + xg.exterieur).toFixed(2)}). Probabilité estimée ${probaPct}%.`;
+  if (choix === 'Moins 1.5' || choix === 'Moins 2.5' || choix === 'Moins 3.5') return `Rencontre fermée attendue par le modèle, ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  if (choix === 'BTTS') return `Les deux attaques sont jugées solides par le modèle, ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  if (choix === 'Sans BTTS') return `Au moins une défense solide attendue par le modèle, ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  if (choix === 'Handicap -1 Domicile') return `${eqDom.nom} jugé favori net par le modèle (au moins 2 buts d'écart). ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  if (choix === 'Handicap +1 Extérieur') return `${eqExt.nom} jugé proche au score par le modèle (perd par au plus 1 but, nul ou gagne). ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+  return `Match jugé équilibré par le modèle (forme ${formeDom}% vs ${formeExt}%), ${xgTxt}. Probabilité estimée ${probaPct}%.`;
+}
+
+// Génère un pronostic pur (sans cote) pour chaque match à venir.
+function genererPronosticsModele(matchs, equipesById) {
+  const pronostics = [];
+  matchs.forEach(m => {
+    const eqDomBrut = equipesById[m.equipe_domicile_id];
+    const eqExtBrut = equipesById[m.equipe_exterieur_id];
+    if (!eqDomBrut || !eqExtBrut) return;
+    // Même ajustement fatigue/calendrier que genererSuggestions(), pour que
+    // le pronostic pur et le value bet du même match restent cohérents.
+    const { eqDom, eqExt } = equipesAjusteesFatigue(eqDomBrut, eqExtBrut, m.date_match, m.id);
+    const probas = calculerProbabilites(eqDom, eqExt);
+    const matchsJoues = Math.min(eqDom.matchs_joues || 10, eqExt.matchs_joues || 10);
+
+    const candidats = [
+      { choix: '1', proba: probas.domicile },
+      { choix: 'N', proba: probas.nul },
+      { choix: '2', proba: probas.exterieur },
+      { choix: 'Double Chance 1X', proba: probas.doubleChance1X },
+      { choix: 'Double Chance X2', proba: probas.doubleChanceX2 },
+      { choix: 'Double Chance 12', proba: probas.doubleChance12 },
+      { choix: 'Plus 1.5', proba: probas.plus15 },
+      { choix: 'Moins 1.5', proba: probas.moins15 },
+      { choix: 'Plus 2.5', proba: probas.plus25 },
+      { choix: 'Moins 2.5', proba: probas.moins25 },
+      { choix: 'Plus 3.5', proba: probas.plus35 },
+      { choix: 'Moins 3.5', proba: probas.moins35 },
+      { choix: 'BTTS', proba: probas.btts },
+      { choix: 'Sans BTTS', proba: probas.sansBtts },
+      { choix: 'Handicap -1 Domicile', proba: probas.handicapDom1 },
+      { choix: 'Handicap +1 Extérieur', proba: probas.handicapExt1 }
+    ].filter(c => typeof c.proba === 'number' && isFinite(c.proba) && c.proba > 0);
+
+    let meilleur = null;
+    candidats.forEach(c => { if (!meilleur || c.proba > meilleur.proba) meilleur = c; });
+    if (!meilleur) return;
+
+    const probaPct = Math.round(meilleur.proba * 100);
+    pronostics.push({
+      match: m,
+      choix: meilleur.choix,
+      proba: meilleur.proba,
+      probaPct,
+      confiance: niveauConfianceModele(meilleur.proba, matchsJoues),
+      raison: genererRaisonModele(eqDom, eqExt, meilleur.choix, probaPct, probas.xg)
+    });
+  });
+  return pronostics.sort((a, b) => b.proba - a.proba);
 }
 
 // ============================================================
@@ -2575,6 +2738,37 @@ function htmlChargerPlus(cle, total, affiches) {
   `;
 }
 
+// Rendu de l'onglet "Pronostics" — pur, sans cote, toujours peuplé dès que
+// des matchs à venir et des équipes sont chargés (démo ou Supabase).
+function renderPronostics() {
+  const pronostics = genererPronosticsModele(demoMatchs.filter(m => m.statut === 'a_venir'), equipesById);
+  const list = document.getElementById('pronosticsList');
+  document.getElementById('statPronostics').textContent = pronostics.length;
+  document.getElementById('statPronosticsConfianceElevee').textContent = pronostics.filter(p => p.confiance === 'eleve').length;
+
+  if (pronostics.length === 0) {
+    list.innerHTML = '<div class="empty-state">Aucun match à venir chargé pour le moment.</div>';
+    return;
+  }
+
+  const afficheesPronostics = nombreAffiche('pronostics');
+  const visibles = pronostics.slice(0, afficheesPronostics);
+
+  list.innerHTML = visibles.map(p => `
+    <div class="card">
+      <div class="match-row">
+        <div>
+          <div class="teams">${nomEquipe(p.match.equipe_domicile_id)} vs ${nomEquipe(p.match.equipe_exterieur_id)}
+            <span class="suggestion-tag tag-${p.confiance}">${p.confiance === 'eleve' ? 'CONFIANCE ÉLEVÉE' : p.confiance === 'moyen' ? 'CONFIANCE MOYENNE' : 'CONFIANCE FAIBLE'}</span>
+          </div>
+          <div class="meta">${formatDate(p.match.date_match)} · Pronostic du modèle : ${p.choix === '1' ? nomEquipe(p.match.equipe_domicile_id) : p.choix === '2' ? nomEquipe(p.match.equipe_exterieur_id) : p.choix === 'N' ? 'Match nul' : p.choix} · Probabilité ${p.probaPct}%</div>
+        </div>
+      </div>
+      <div class="suggestion-reason">${p.raison}</div>
+    </div>
+  `).join('') + htmlChargerPlus('pronostics', pronostics.length, afficheesPronostics);
+}
+
 function renderSuggestions() {
   // AJOUT — réinjection du CLV : le facteur DOIT être recalculé avant
   // genererSuggestions() (qui appelle tailleMiseKelly en interne pour
@@ -3341,6 +3535,7 @@ function importerResultats() {
   document.getElementById('importInput').value = '';
 
   // Recalcule tout l'affichage avec les nouveaux ratings
+  renderPronostics();
   renderSuggestions();
   renderMatchs();
   renderEquipes();
@@ -3465,9 +3660,10 @@ async function synchroniserAutomatiquement() {
   // listes paginées ; on repart sur la première page plutôt que de garder un
   // nombre affiché qui ne correspond plus à rien de stable.
   reinitialiserPagination('suggestions');
+  reinitialiserPagination('pronostics');
   reinitialiserPagination('matchs');
   reinitialiserPagination('tickets');
-  renderSuggestions(); renderMatchs(); renderCarnet(); renderEquipes(); renderBacktest(); renderTickets(); renderLive(); renderTicketsLive();
+  renderPronostics(); renderSuggestions(); renderMatchs(); renderCarnet(); renderEquipes(); renderBacktest(); renderTickets(); renderLive(); renderTicketsLive();
   if (typeof renderSyncStatus === 'function') renderSyncStatus(erreurs);
   demarrerOuArreterPollingLive(); // (ré)active le cycle rapide dédié si des matchs sont en direct
 }
@@ -3490,6 +3686,11 @@ function renderSyncStatus(erreurs = 0) {
     badge.textContent = 'Synchro auto désactivée';
     badge.className = 'config-status demo';
     if (detail) detail.innerHTML = `Connecte Supabase (<code>SUPABASE_URL</code> / <code>SUPABASE_ANON_KEY</code>) pour activer la synchro automatique. La clé API-Football, elle, se configure côté serveur : <code>supabase secrets set API_FOOTBALL_KEY=xxxxxxxx</code> puis <code>supabase functions deploy sync-matchs</code>. En attendant, utilise l'import manuel ci-dessous.`;
+  } else if (!SYNCHRO_AUTO_ACTIVE) {
+    const heure = dernierSyncTimestamp ? dernierSyncTimestamp.toLocaleTimeString('fr-FR') : '—';
+    badge.textContent = dernierSyncTimestamp ? `Mode manuel · dernière synchro à ${heure}` : 'Mode manuel · aucune synchro lancée';
+    badge.className = 'config-status demo';
+    if (detail) detail.innerHTML = `Synchro automatique désactivée (économie de quota API-Football) : les données affichées viennent uniquement de la base, sans appel API. Utilise "Forcer la synchro" ci-dessous quand tu veux vraiment consommer une requête de ton quota de 100/jour.`;
   } else {
     const heure = dernierSyncTimestamp ? dernierSyncTimestamp.toLocaleTimeString('fr-FR') : '—';
     badge.textContent = erreurs > 0 ? `Synchro partielle (${erreurs} erreur(s))` : `Synchronisé à ${heure}`;
@@ -3508,6 +3709,21 @@ function renderSyncStatus(erreurs = 0) {
             <div class="teams">${l.nom}</div>
           </div>
         `).join('');
+    }
+  }
+
+  // AJOUT — bouton ON/OFF de la synchro auto : masqué en mode démo (rien à
+  // activer sans Supabase), sinon reflète toujours l'état réel courant.
+  const btnToggle = document.getElementById('btnToggleSyncAuto');
+  if (btnToggle) {
+    if (MODE_DEMO) {
+      btnToggle.style.display = 'none';
+    } else {
+      btnToggle.style.display = '';
+      btnToggle.textContent = SYNCHRO_AUTO_ACTIVE ? '🟢 Synchro auto : ON (cliquer pour arrêter)' : '⚪ Synchro auto : OFF (cliquer pour activer)';
+      btnToggle.style.background = SYNCHRO_AUTO_ACTIVE ? '' : 'var(--surface-alt)';
+      btnToggle.style.color = SYNCHRO_AUTO_ACTIVE ? '' : 'var(--text-muted)';
+      btnToggle.style.border = SYNCHRO_AUTO_ACTIVE ? '' : '1px solid var(--border-strong)';
     }
   }
 }
@@ -3751,6 +3967,7 @@ document.querySelector('.content').addEventListener('click', (e) => {
     const cle = elChargerPlus.dataset.listKey;
     paginationState[cle] = nombreAffiche(cle) + PAGE_SIZE_LISTES;
     if (cle === 'suggestions') renderSuggestions();
+    else if (cle === 'pronostics') renderPronostics();
     else if (cle === 'matchs') renderMatchs();
     else if (cle === 'tickets') renderTickets();
     return;
@@ -3763,6 +3980,13 @@ document.querySelector('.content').addEventListener('click', (e) => {
   const elSynchro = e.target.closest('[data-action="forcer-synchro"]');
   if (elSynchro) {
     synchroniserAutomatiquement();
+    return;
+  }
+  // AJOUT — bouton ON/OFF de la synchro auto (voir basculerSynchroAuto) :
+  // contrôle direct depuis l'app, sans avoir à toucher au code.
+  const elToggleSync = e.target.closest('[data-action="toggle-sync-auto"]');
+  if (elToggleSync) {
+    basculerSynchroAuto();
     return;
   }
   const elImport = e.target.closest('[data-action="importer-resultats"]');
@@ -3785,10 +4009,26 @@ document.querySelector('.content').addEventListener('click', (e) => {
     const { data: { session } } = await supabaseClient.auth.getSession();
     currentUser = session ? session.user : null;
     mettreAJourUIAuth();
-    await synchroniserAutomatiquement();
-    setInterval(synchroniserAutomatiquement, SYNC_INTERVALLE_MINUTES * 60 * 1000);
+    if (SYNCHRO_AUTO_ACTIVE) {
+      await synchroniserAutomatiquement();
+      demarrerSynchroAutoPeriodique();
+    } else {
+      // Coupe-circuit quota — voir SYNCHRO_AUTO_ACTIVE : on relit uniquement
+      // les données déjà en base (aucun appel API-Football), sans déclencher
+      // sync-matchs ni démarrer d'intervalle automatique. Utilise "Forcer la
+      // synchro" (onglet Synchronisation) quand tu veux vraiment consommer
+      // une requête de ton quota.
+      await chargerDonneesSupabase();
+      reinitialiserPagination('suggestions');
+      reinitialiserPagination('pronostics');
+      reinitialiserPagination('matchs');
+      reinitialiserPagination('tickets');
+      renderPronostics(); renderSuggestions(); renderMatchs(); renderCarnet(); renderEquipes(); renderBacktest(); renderTickets(); renderLive(); renderTicketsLive();
+      renderSyncStatus();
+    }
   } else {
     await chargerDonneesSupabase();
+    renderPronostics();
     renderSuggestions();
     renderMatchs();
     renderCarnet();
